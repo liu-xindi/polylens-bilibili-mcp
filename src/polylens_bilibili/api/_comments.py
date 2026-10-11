@@ -1,7 +1,4 @@
-"""评论：WBI 签名的主评论分页 + 二级评论钻取。
-
-未登录时平台不报错，而是只给几条并声称已到底，故两处都在取数据前判登录态。
-"""
+"""评论：WBI 签名的主评论分页 + 二级评论钻取。"""
 
 from __future__ import annotations
 
@@ -12,7 +9,7 @@ from collections.abc import Hashable
 from dataclasses import replace
 from typing import Any, NamedTuple
 
-from ..errors import AuthRequiredError, BilibiliError, RateLimitedError
+from ..errors import BilibiliError, RateLimitedError
 from ..models import Comment, Page, ReplyBatch, ReplyThread, space_url, to_local_time
 from ._constants import ENDPOINTS, REPLY_PAGE_SIZE
 from ._http import HttpClient, _RateLimited
@@ -189,7 +186,6 @@ def fetch_replies(
     单条主评论取不到（评论不存在、不属于这个视频）只记在它的 error 上，不影响其他。
     中途触发风控或限流即停：已取完的照常返回，被打断的与没轮到的在 error 里说明原因。
     按页码取，结果可重放，留下已取完的没有副作用。一条都没取完才抛 RateLimitedError。
-    二级评论接口本身不需要 WBI 签名，这里调 nav 只为拿登录态。
 
     整次调用缓存，refresh 跳过缓存重取并覆盖。有任何一条出错（包括被打断）或全空时不缓存，
     空结果可能是平台临时异常。
@@ -204,8 +200,6 @@ def fetch_replies(
     key = ("replies", client.account, aid, tuple(comment_ids), start_page, pages)
     if not refresh and (hit := _cached(key)) is not None:
         return hit
-    if not fetch_nav(client).is_login:
-        raise AuthRequiredError("comment_replies")
     results: list[ReplyThread] = []
     for i, cid in enumerate(comment_ids):
         try:
@@ -330,8 +324,6 @@ def _collect_main(
 ) -> Page[Comment]:
     mode = _SORT_MODE[sort]
     nav = fetch_nav(client)
-    if not nav.is_login:
-        raise AuthRequiredError("comments")
     want = count
     comments: list[Comment] = []
     # offset 恒指向"还没取回的那一页"，None 表示没有下一页。抓完一页立刻改写它，

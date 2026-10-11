@@ -14,7 +14,7 @@ from multiprocessing.connection import Connection
 from typing import Any
 
 from .errors import BilibiliError
-from .models import toon_table
+from .models import Batched, toon_table
 
 TIMEOUT_S = 2.0
 MEMORY_LIMIT = 256 * 1024 * 1024
@@ -128,6 +128,28 @@ def encode_items(
     """把数据类实例列表过一遍 jq，按结果形状编码。返回 (编码串, jq_count)。"""
     columns = [f.name for f in fields(item_type) if f.name not in exclude]
     rows = [{c: d[c] for c in columns} for d in map(asdict, items)]
+    return _filter(name, rows, columns, expr)
+
+
+def encode_batch(
+    name: str, results: list[Batched[Any]], item_type: type, expr: str
+) -> tuple[str, int | None]:
+    """批量结果每项一行，首列 input、末列 error；取不到的行其余列为 null。"""
+    columns = [f.name for f in fields(item_type)]
+    rows = [
+        {
+            "input": r.input,
+            **(asdict(r.value) if r.value is not None else dict.fromkeys(columns)),
+            "error": r.error,
+        }
+        for r in results
+    ]
+    return _filter(name, rows, ["input", *columns, "error"], expr)
+
+
+def _filter(
+    name: str, rows: list[dict[str, Any]], columns: list[str], expr: str
+) -> tuple[str, int | None]:
     try:
         outputs = run_jq(expr, rows)
     except JqError as e:

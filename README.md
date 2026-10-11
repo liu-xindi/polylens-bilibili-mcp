@@ -9,10 +9,10 @@
 | `search_videos` | 按关键词搜索视频，每批 30 条，最多 30 页 |
 | `suggest_keywords` | 搜索框联想词 |
 | `get_feed` | 首页推荐流，每批 30 条 |
-| `get_up_info` | UP 主资料：签名、粉丝、获赞、等级、认证等 |
+| `get_up_info` | UP 主资料：签名、粉丝、获赞、等级、认证等，可一次查多个 |
 | `list_up_videos` | UP 主投稿，每批最多 40 条，可按最新、播放、收藏排序 |
-| `get_video_info` | 标题、作者、发布时间、简介与各项统计 |
-| `get_parts` | 分 P 清单 |
+| `get_video_info` | 标题、作者、发布时间、简介与各项统计，可一次查多个视频或分 P |
+| `get_parts` | 分 P 清单，可一次查多个视频 |
 | `get_comments` | 主评论，热度序或时间序，游标续取 |
 | `get_comment_replies` | 某条主评论下的二级评论 |
 | `get_subtitles` | 逐句字幕，含起止秒数，可指定语种 |
@@ -22,11 +22,11 @@
 
 ## 登录
 
-`get_comments`、`get_comment_replies`、`get_subtitles`、`list_up_videos` 需要登录。`start_qr_login` 返回二维码，用 B 站 App 扫码确认后，由 `complete_qr_login` 完成登录。凭据保存在 `~/.cache/polylens-bilibili/cookie`（设置了 `XDG_CACHE_HOME` 时位于其下），`logout` 会删除它。
+除登录相关工具与 `get_version` 外都需要登录，每次调用前联网核验登录状态。`start_qr_login` 返回二维码，用 B 站 App 扫码确认后，由 `complete_qr_login` 完成登录。凭据保存在 `~/.cache/polylens-bilibili/cookie`（设置了 `XDG_CACHE_HOME` 时位于其下），`logout` 会删除它。
 
 ## 用 jq 精简返回
 
-`search_videos`、`list_up_videos`、`get_feed`、`get_parts`、`get_comments`、`get_comment_replies`、`get_subtitles` 必须传 `jq` 参数，在返回前筛选条目或裁剪字段，减少上下文占用。表达式由模型自行编写，传 `.` 则原样返回，例如：
+`search_videos`、`list_up_videos`、`get_feed`、`get_video_info`、`get_up_info`、`get_parts`、`get_comments`、`get_comment_replies`、`get_subtitles` 必须传 `jq` 参数，在返回前筛选条目或裁剪字段，减少上下文占用。表达式由模型自行编写，传 `.` 则原样返回，例如：
 
 | 用途 | 表达式 |
 |---|---|

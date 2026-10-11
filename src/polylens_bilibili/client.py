@@ -1,6 +1,6 @@
 """能力入口：把工具层的请求翻译成对 api 层的调用。
 
-登录判断不在这里集中做，各能力在自己取数据的路径上判（见 api 下对应模块）。
+登录由工具层在调用前统一核验（见 server._logged_in），这里不再判。
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+from collections.abc import Callable
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -25,8 +26,9 @@ from .api._subtitles import SubtitleTrack, fetch_subtitles
 from .api._suggest import fetch_suggest
 from .api._up import fetch_up_info
 from .api._video import build_video_info, fetch_view, list_parts
-from .errors import BilibiliError
+from .errors import AuthRequiredError, BilibiliError, RateLimitedError
 from .models import (
+    Batched,
     Comment,
     FeedItem,
     LoginCheckResult,
@@ -152,6 +154,10 @@ class BilibiliClient:
     def _view(self, video_id: str) -> dict[str, Any]:
         return fetch_view(self._http, _id_params(video_id))
 
+    def require_login(self) -> None:
+        if not fetch_nav(self._http).is_login:
+            raise AuthRequiredError("all")
+
     def get_login_status(self) -> bool | None:
         """调平台接口核验 cookie 是否有效。None 表示无法验证。
 
@@ -170,9 +176,16 @@ class BilibiliClient:
     def check_qr_login(self, key: str) -> LoginCheckResult:
         return check_qr_login(self._http, key)
 
-    def get_video_info(self, video_id: str, page: int = 1) -> VideoInfo:
-        info, _aid, _cid = build_video_info(self._view(video_id), page)
-        return info
+    def get_video_infos(self, inputs: list[str]) -> list[Batched[VideoInfo]]:
+        views: dict[str, dict[str, Any]] = {}
+
+        def fetch(text: str) -> VideoInfo:
+            video_id, page = resolve_video(text, cookie=self._http.cookie)
+            if video_id not in views:
+                views[video_id] = self._view(video_id)
+            return build_video_info(views[video_id], page)[0]
+
+        return _each(inputs, fetch)
 
     def get_comments(
         self,
@@ -216,8 +229,16 @@ class BilibiliClient:
         _info, aid, cid = build_video_info(view, page)
         return fetch_subtitles(self._http, aid, cid, lang)
 
-    def get_parts(self, video_id: str) -> list[VideoPart]:
-        return list_parts(self._view(video_id))
+    def get_parts(self, inputs: list[str]) -> list[Batched[list[VideoPart]]]:
+        views: dict[str, dict[str, Any]] = {}
+
+        def fetch(text: str) -> list[VideoPart]:
+            video_id, _page = resolve_video(text, cookie=self._http.cookie)
+            if video_id not in views:
+                views[video_id] = self._view(video_id)
+            return list_parts(views[video_id])
+
+        return _each(inputs, fetch)
 
     def search(
         self, *, query: str, cursor: str | None = None, order: str = "relevance"
@@ -237,8 +258,16 @@ class BilibiliClient:
     ) -> tuple[str | None, int, Page[UpVideoItem]]:
         return fetch_up_videos(self._http, mid, cursor=cursor, order=order, keyword=keyword)
 
-    def get_up_info(self, mid: int) -> UpInfo:
-        return fetch_up_info(self._http, mid)
+    def get_up_infos(self, inputs: list[str]) -> list[Batched[UpInfo]]:
+        infos: dict[int, UpInfo] = {}
+
+        def fetch(text: str) -> UpInfo:
+            mid = resolve_up(text)
+            if mid not in infos:
+                infos[mid] = fetch_up_info(self._http, mid)
+            return infos[mid]
+
+        return _each(inputs, fetch)
 
     def get_feed(self) -> list[FeedItem]:
         return fetch_feed(self._http)
@@ -247,6 +276,28 @@ class BilibiliClient:
 # 评论请求整个串行：并发时同一个热度序会话会被几个请求交错推进，评论被拆散到各个请求里；
 # 时间序则会重复抓取还没进缓存的页。限速本来就是全局的，串行不降低吞吐。
 _comment_requests = threading.Lock()
+
+
+def _each[T](inputs: list[str], fetch: Callable[[str], T]) -> list[Batched[T]]:
+    """逐项串行取，按输入顺序返回。某项触发风控后，其余项不再请求，记同一原因。"""
+    done: dict[str, Batched[T]] = {}
+    blocked: str | None = None
+    for text in inputs:
+        if text in done:
+            continue
+        if blocked is not None:
+            done[text] = Batched(text, error=blocked)
+            continue
+        try:
+            done[text] = Batched(text, fetch(text))
+        except RateLimitedError as e:
+            blocked = str(e)
+            done[text] = Batched(text, error=blocked)
+        except BilibiliError as e:
+            done[text] = Batched(text, error=str(e))
+        except OSError as e:
+            done[text] = Batched(text, error=f"网络错误：{e}")
+    return [done[text] for text in inputs]
 
 
 def _id_params(video_id: str) -> dict[str, Any]:

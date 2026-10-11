@@ -17,8 +17,8 @@ from polylens_bilibili.client import (
     resolve_up,
     resolve_video,
 )
-from polylens_bilibili.errors import BilibiliError
-from polylens_bilibili.models import Page
+from polylens_bilibili.errors import BilibiliError, RateLimitedError
+from polylens_bilibili.models import Page, UpInfo
 
 BV_URL = "https://www.bilibili.com/video/BV1xx411c7mD/"
 
@@ -155,6 +155,83 @@ def _view_stub(duration: float | None = 100.0) -> dict[str, Any]:
         "aid": 1, "bvid": "BV1xx", "cid": 200, "title": "t",
         "stat": {}, "duration": duration,
     }
+
+
+# ── 批量 ────────────────────────────────────────────────────────────────────
+
+
+def _multi_view(bvid: str) -> dict[str, Any]:
+    return {
+        "aid": 1, "bvid": bvid, "title": bvid, "stat": {}, "duration": 90,
+        "pages": [{"cid": 10 + p, "page": p, "part": f"P{p}", "duration": 30} for p in (1, 2, 3)],
+    }
+
+
+def test_video_infos_fetch_each_video_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一视频的多个分段共用一次 view；结果按输入顺序，重复的输入照样逐项返回。"""
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        BilibiliClient, "_view", lambda self, vid: fetched.append(vid) or _multi_view(vid)
+    )
+    inputs = ["BV1a?p=1", "BV1b?p=2", "BV1a?p=3", "BV1a?p=1"]
+    results = BilibiliClient().get_video_infos(inputs)
+    assert fetched == ["BV1a", "BV1b"]
+    assert [r.input for r in results] == inputs
+    assert [(r.value.id, r.value.current_page) for r in results if r.value] == [
+        ("BV1a", 1), ("BV1b", 2), ("BV1a", 3), ("BV1a", 1),
+    ]
+
+
+def test_batch_keeps_going_after_an_item_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    def view(self: Any, vid: str) -> dict[str, Any]:
+        if vid == "BV1gone":
+            raise BilibiliError("视频不存在：BV1gone")
+        return _multi_view(vid)
+
+    monkeypatch.setattr(BilibiliClient, "_view", view)
+    results = BilibiliClient().get_video_infos(["BV1gone", "不是视频", "BV1a"])
+    assert [r.error for r in results] == [
+        "视频不存在：BV1gone", "无法从输入解析 BV/av 号：不是视频", None,
+    ]
+    assert results[2].value is not None
+
+
+def test_batch_stops_requesting_after_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """触发风控后继续请求只会延长封禁，其余项记同一原因。"""
+    fetched: list[int] = []
+
+    def fetch(http: Any, mid: int) -> Any:
+        fetched.append(mid)
+        if mid == 2:
+            raise RateLimitedError("被拦了")
+        return UpInfo(mid=mid)
+
+    monkeypatch.setattr(client_mod, "fetch_up_info", fetch)
+    results = BilibiliClient().get_up_infos(["1", "2", "3", "4"])
+    assert fetched == [1, 2]
+    assert [r.error for r in results] == [None, "被拦了", "被拦了", "被拦了"]
+
+
+def test_batch_reports_network_error_per_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fetch(http: Any, mid: int) -> Any:
+        if mid == 1:
+            raise ConnectionResetError("reset")
+        return UpInfo(mid=mid)
+
+    monkeypatch.setattr(client_mod, "fetch_up_info", fetch)
+    results = BilibiliClient().get_up_infos(["1", "2"])
+    assert results[0].error == "网络错误：reset"
+    assert results[1].value == UpInfo(mid=2)
+
+
+def test_up_infos_fetch_each_mid_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetched: list[int] = []
+    monkeypatch.setattr(
+        client_mod, "fetch_up_info", lambda http, mid: fetched.append(mid) or UpInfo(mid=mid)
+    )
+    results = BilibiliClient().get_up_infos(["42", "https://space.bilibili.com/42"])
+    assert fetched == [42]
+    assert [r.value.mid for r in results if r.value] == [42, 42]
 
 
 # ── 短链展开 ────────────────────────────────────────────────────────────────

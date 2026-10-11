@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 import pytest
@@ -49,7 +50,7 @@ def test_maps_fields() -> None:
     assert path == "/x/web-interface/card"
     assert params == {"mid": MID}
     assert kw["allow_codes"] == {-404}
-    assert info.model_dump() == {
+    assert asdict(info) == {
         "mid": MID, "author": "老番茄", "author_url": f"https://space.bilibili.com/{MID}",
         "sign": "天天开心", "sex": "男", "level": 6, "follower_count": 100,
         "following_count": 52, "like_count": 198533,

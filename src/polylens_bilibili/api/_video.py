@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..errors import BilibiliError
-from ..models import StaffMember, VideoInfo, VideoPart, space_url, to_local_time
+from ..errors import BilibiliError, RateLimitedError
+from ..models import VideoInfo, VideoPart, space_url, to_local_time
 from ._constants import ENDPOINTS
-from ._http import BilibiliHttpError, HttpClient
+from ._http import BilibiliHttpError, HttpClient, _RateLimited
 
 
 def _resolve_page(view: dict[str, Any], page: int) -> dict[str, Any]:
@@ -50,6 +50,8 @@ def fetch_view(client: HttpClient, params: dict[str, Any]) -> dict[str, Any]:
     """拉取视频原始 view 数据（含全部分段，与请求的是哪一段无关）。"""
     try:
         return client.get_json(ENDPOINTS["video_info"], params)
+    except _RateLimited as e:
+        raise RateLimitedError(e.describe("取视频信息")) from None
     except BilibiliHttpError as e:
         hint = _VIEW_ERRORS.get(e.code)
         if hint is None:
@@ -65,26 +67,20 @@ def _summary_of(view: dict[str, Any]) -> str | None:
         text = "".join(parts).strip() or (view.get("desc") or "").strip()
     else:
         text = (view.get("desc") or "").strip()
-    return text or None
+    return None if text in ("", "-") else text
 
 
-_COPYRIGHT = {1: "自制", 2: "转载"}
-
-
-def _staff_of(view: dict[str, Any]) -> list[StaffMember] | None:
-    """联合投稿的成员；非联合投稿平台不给 staff，返回 None。"""
+def _staff_of(view: dict[str, Any]) -> str | None:
+    """联合投稿的成员，展平为 "名字(角色,mid)" 以分号分隔；非联合投稿平台不给 staff，返回 None。"""
     staff = view.get("staff")
-    if not isinstance(staff, list) or not staff:
+    if not isinstance(staff, list):
         return None
-    return [
-        StaffMember(
-            name=m.get("name") or None,
-            role=m.get("title") or None,
-            author_url=space_url(m.get("mid")),
-        )
+    members = [
+        f"{m.get('name') or ''}({m.get('title') or ''},{m.get('mid') or ''})"
         for m in staff
         if isinstance(m, dict)
     ]
+    return ";".join(members) or None
 
 
 def build_video_info(view: dict[str, Any], page: int = 1) -> tuple[VideoInfo, int, int]:
@@ -115,7 +111,6 @@ def build_video_info(view: dict[str, Any], page: int = 1) -> tuple[VideoInfo, in
         url=f"https://www.bilibili.com/video/{bvid}/",
         published_at=to_local_time(view.get("pubdate")),
         summary=_summary_of(view),
-        copyright=_COPYRIGHT.get(view.get("copyright")),  # type: ignore[arg-type]
         staff=_staff_of(view),
         duration_sec=float(duration) if duration else None,
         # 顶层 duration 是整片时长（实测等于各段之和），多段分支里被换成了分段时长，这里补回。
@@ -129,7 +124,6 @@ def build_video_info(view: dict[str, Any], page: int = 1) -> tuple[VideoInfo, in
         coin_count=stat.get("coin"),
         cover_url=view.get("pic"),
         part_count=view.get("videos"),
-        category_id=view.get("tid"),
     )
     if is_multi:
         info.current_page = selected.get("page") or page

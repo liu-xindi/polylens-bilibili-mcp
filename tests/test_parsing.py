@@ -103,17 +103,15 @@ def test_build_video_info_url_shape():
     assert info.url == "https://www.bilibili.com/video/BV1abc/"
 
 
-def test_build_video_info_category_and_duration():
-    info, _, _ = build_video_info(_view(duration=120, videos=3, tid=17))
+def test_build_video_info_duration_and_part_count():
+    info, _, _ = build_video_info(_view(duration=120, videos=3))
     assert info.duration_sec == 120
     assert info.part_count == 3
-    assert info.category_id == 17
 
 
-def test_build_video_info_copyright():
-    assert build_video_info(_view(copyright=1))[0].copyright == "自制"
-    assert build_video_info(_view(copyright=2))[0].copyright == "转载"
-    assert build_video_info(_view())[0].copyright is None
+def test_build_video_info_placeholder_summary_is_none():
+    """没写简介时平台常给一个 "-"，与空简介同样不算内容。"""
+    assert build_video_info(_view(desc="-"))[0].summary is None
 
 
 def test_build_video_info_staff_for_union_video():
@@ -121,12 +119,7 @@ def test_build_video_info_staff_for_union_video():
         {"mid": 42, "title": "UP主", "name": "甲"},
         {"mid": 43, "title": "剪辑", "name": "乙"},
     ])
-    staff = build_video_info(view)[0].staff
-    assert staff is not None
-    assert [(m.name, m.role, m.author_url) for m in staff] == [
-        ("甲", "UP主", "https://space.bilibili.com/42"),
-        ("乙", "剪辑", "https://space.bilibili.com/43"),
-    ]
+    assert build_video_info(view)[0].staff == "甲(UP主,42);乙(剪辑,43)"
 
 
 def test_build_video_info_staff_absent_is_none():

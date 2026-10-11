@@ -11,8 +11,6 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel
-
 
 def space_url(mid: Any) -> str | None:
     """UP 主 mid → 空间链接；没有 mid 就没有链接。"""
@@ -244,28 +242,18 @@ class VideoPart:
     duration: float | None  # 该段时长秒数
 
 
-class StaffMember(BaseModel):
-    name: str | None = None
-    role: str | None = None
-    author_url: str | None = None
-
-
-class VideoInfo(BaseModel):
-    """视频元信息。字段恒在，无值为 null。
-
-    这里不写字段说明：outputSchema 的字段描述不进模型上下文（2026-08-24 实测），
-    写在这里等于没写。需要模型知道的口径写在 server.py 的工具 description 里。
-    """
+@dataclass(slots=True)
+class VideoInfo:
+    """视频元信息。字段口径写在 server.py 的工具 description 里。"""
 
     id: str
     title: str
     author: str | None = None
-    author_url: str | None = None
-    url: str | None = None
+    author_url: str | None = field(default=None, metadata=bulky("查看 UP 主时需要"))
+    url: str | None = field(default=None, metadata=bulky("给出视频链接时需要"))
     published_at: str | None = None
     summary: str | None = None
-    copyright: str | None = None               # 自制 / 转载
-    staff: list[StaffMember] | None = None     # 仅联合投稿有值
+    staff: str | None = None                   # 仅联合投稿有值，"名字(角色,mid)" 以分号分隔
     duration_sec: float | None = None          # 多段视频为当前段
     total_duration_sec: float | None = None    # 多段视频为全部分段之和
     view_count: int | None = None
@@ -275,19 +263,19 @@ class VideoInfo(BaseModel):
     favorite_count: int | None = None
     share_count: int | None = None
     coin_count: int | None = None
-    cover_url: str | None = None
+    cover_url: str | None = field(default=None, metadata=bulky())
     part_count: int | None = None
-    category_id: int | None = None
     current_page: int | None = None            # 仅多段视频有值
     current_part: str | None = None            # 仅多段视频有值
 
 
-class UpInfo(BaseModel):
-    """UP 主资料。字段恒在，无值为 null。字段口径写在 server.py 的工具 description 里。"""
+@dataclass(slots=True)
+class UpInfo:
+    """UP 主资料。字段口径写在 server.py 的工具 description 里。"""
 
     mid: int
     author: str | None = None
-    author_url: str | None = None
+    author_url: str | None = field(default=None, metadata=bulky("给出空间链接时需要"))
     sign: str | None = None
     sex: str | None = None
     level: int | None = None
@@ -297,4 +285,13 @@ class UpInfo(BaseModel):
     official_type: str | None = None
     official_title: str | None = None
     vip: str | None = None
-    face_url: str | None = None
+    face_url: str | None = field(default=None, metadata=bulky())
+
+
+@dataclass(slots=True)
+class Batched[Item]:
+    """批量调用里一项输入的结果：取到时 value 有值，否则 error 写原因。"""
+
+    input: str
+    value: Item | None = None
+    error: str | None = None

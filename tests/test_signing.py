@@ -26,8 +26,10 @@ _GOLDEN_WRID = "6149fdadf571698ca7e6a567265cd0ee"
 class _FakeClient:
     def __init__(self, is_login: bool = False) -> None:
         self._is_login = is_login
+        self.calls = 0
 
     def get_json(self, endpoint: str, allow_codes: set[int] | None = None) -> dict[str, Any]:
+        self.calls += 1
         return {
             "isLogin": self._is_login,
             "wbi_img": {
@@ -80,3 +82,14 @@ def test_fetch_nav_carries_login_state() -> None:
     """同一次 nav 请求顺带给出登录态，需要登录的能力据此判断，不另发请求。"""
     assert fetch_nav(_FakeClient(is_login=True)).is_login is True  # type: ignore[arg-type]
     assert fetch_nav(_FakeClient(is_login=False)).is_login is False  # type: ignore[arg-type]
+
+
+def test_fetch_nav_once_per_client() -> None:
+    """工具层核验登录与能力取签名密钥共用一次 nav；换一个 client 才重新请求。"""
+    client = _FakeClient(is_login=True)
+    fetch_nav(client)  # type: ignore[arg-type]
+    fetch_nav(client)  # type: ignore[arg-type]
+    assert client.calls == 1
+    other = _FakeClient()
+    assert fetch_nav(other).is_login is False  # type: ignore[arg-type]
+    assert other.calls == 1

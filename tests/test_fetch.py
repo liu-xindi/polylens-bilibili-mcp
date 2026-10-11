@@ -15,7 +15,7 @@ from polylens_bilibili.api._http import BilibiliHttpError, HttpClient, _RateLimi
 from polylens_bilibili.api._signing import NavInfo
 from polylens_bilibili.api._subtitles import fetch_subtitles
 from polylens_bilibili.api._video import fetch_view
-from polylens_bilibili.errors import AuthRequiredError, BilibiliError, RateLimitedError
+from polylens_bilibili.errors import BilibiliError, RateLimitedError
 
 # ── 共用辅助 ────────────────────────────────────────────────────────────────
 
@@ -24,7 +24,6 @@ _PLATFORM_PAGE = 20  # 平台的主评论单页条数，测试里用来拼"满�
 _PLATFORM_CURSOR = "CAESEDE4MzQyNzYxNTEwNTEyMzAaADIECPnBAQ=="  # 实测平台发出的游标
 
 _LOGGED_IN = NavInfo("imgkey", "subkey", True)
-_ANONYMOUS = NavInfo("imgkey", "subkey", False)
 
 
 def _nav_patch(module: str, nav: NavInfo = _LOGGED_IN):
@@ -218,15 +217,6 @@ def test_fetch_comments_rate_limited_midway_returns_partial():
     assert page.has_more is True and page.next_cursor == "SESSION"
 
 
-def test_fetch_comments_requires_login():
-    """未登录时平台只给几条并声称到底，故取数据前就拦住。"""
-    client = MagicMock()
-    with _nav_patch("_comments", _ANONYMOUS), _SIGN_PATCH:
-        with pytest.raises(AuthRequiredError):
-            fetch_comments(client, aid=100, count=20)
-    client.get_json.assert_not_called()
-
-
 # ── fetch_replies ───────────────────────────────────────────────────────────
 
 
@@ -362,14 +352,6 @@ def test_fetch_replies_withheld_degrades_to_zero(shape: dict):
     assert out[0].withheld == 0
 
 
-def test_fetch_replies_requires_login():
-    client = MagicMock()
-    with _nav_patch("_comments", _ANONYMOUS):
-        with pytest.raises(AuthRequiredError):
-            fetch_replies(client, 100, ["1"], pages=1)
-    client.get_json.assert_not_called()
-
-
 @pytest.mark.parametrize("bad", ["not-a-cursor", "TOKEN", "===="])
 def test_fetch_comments_rejects_unparsable_cursor(bad: str):
     """平台不校验游标，乱写的会被当成从头开始，只能在本地拦。"""
@@ -481,15 +463,6 @@ def test_fetch_subtitles_empty_when_no_tracks():
     with _nav_patch("_subtitles"), _SIGN_PATCH_SUB:
         track = fetch_subtitles(client, aid=100, cid=200)
     assert track.entries == [] and track.lang is None and track.available_langs == []
-
-
-def test_fetch_subtitles_requires_login():
-    """未登录时平台返回空轨道，与"这个视频没字幕"无法区分，故先判登录态。"""
-    client = _subtitle_client([_SUBTITLE_META[0]])
-    with _nav_patch("_subtitles", _ANONYMOUS), _SIGN_PATCH_SUB:
-        with pytest.raises(AuthRequiredError):
-            fetch_subtitles(client, aid=100, cid=200)
-    client.get_json.assert_not_called()
 
 
 # ── HttpClient 的风控判定 ───────────────────────────────────────────────────

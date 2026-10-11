@@ -11,7 +11,7 @@ import pytest
 from polylens_bilibili.api import _space as space_mod
 from polylens_bilibili.api._http import _RateLimited
 from polylens_bilibili.api._signing import NavInfo
-from polylens_bilibili.errors import AuthRequiredError, BilibiliError, RateLimitedError
+from polylens_bilibili.errors import BilibiliError, RateLimitedError
 
 MID = 3690981465524933
 
@@ -121,15 +121,6 @@ def test_cursor_counts_pages_and_stops_at_total() -> None:
     _, _, last = _fetch(client, cursor=first.next_cursor)
     assert client.calls[1][0]["pn"] == 2
     assert not last.has_more and last.next_cursor is None
-
-
-def test_requires_login(monkeypatch: pytest.MonkeyPatch) -> None:
-    """未登录时平台常回 412，按风控报错会让调用方等待恢复，故先拦下，不发请求。"""
-    monkeypatch.setattr(space_mod, "fetch_nav", lambda c: NavInfo("img", "sub", False))
-    client = _Client([_raw(0)], total=1)
-    with pytest.raises(AuthRequiredError):
-        _fetch(client)
-    assert client.calls == []
 
 
 def test_rate_limit_becomes_error() -> None:

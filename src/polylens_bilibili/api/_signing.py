@@ -10,6 +10,7 @@ import random
 import re
 import string
 import time
+import weakref
 from typing import Any, NamedTuple
 from urllib.parse import urlencode
 
@@ -29,8 +30,21 @@ def extract_mixin_key(img_key: str, sub_key: str) -> str:
     return "".join(mixed[i] for i in WBI_MIXIN_KEY_ENC_TAB if i < len(mixed))[:32]
 
 
+# 一次工具调用共用一个 HttpClient：工具层先核验登录，需要签名的能力再取密钥，
+# 同一次调用只请求一次 nav。
+_navs: weakref.WeakKeyDictionary[HttpClient, NavInfo] = weakref.WeakKeyDictionary()
+
+
 def fetch_nav(client: HttpClient) -> NavInfo:
-    """取 WBI 密钥与登录态（未登录也能取到密钥）。"""
+    """取 WBI 密钥与登录态（未登录也能取到密钥）。同一个 client 只请求一次。"""
+    if (nav := _navs.get(client)) is not None:
+        return nav
+    nav = _fetch_nav(client)
+    _navs[client] = nav
+    return nav
+
+
+def _fetch_nav(client: HttpClient) -> NavInfo:
     data = client.get_json(ENDPOINTS["nav"], allow_codes={-101})
     img_url = data["wbi_img"]["img_url"]
     sub_url = data["wbi_img"]["sub_url"]

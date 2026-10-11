@@ -1,13 +1,10 @@
-"""字幕：player/wbi/v2 接口取轨道地址，再拉取 JSON 解析为 SubtitleEntry。
-
-未登录时平台返回空轨道列表而非报错，与"这个视频没有字幕"无法区分，故取数据前判登录态。
-"""
+"""字幕：player/wbi/v2 接口取轨道地址，再拉取 JSON 解析为 SubtitleEntry。"""
 
 from __future__ import annotations
 
 from typing import Any, NamedTuple
 
-from ..errors import AuthRequiredError, BilibiliError
+from ..errors import BilibiliError
 from ..models import SubtitleEntry
 from ._constants import ENDPOINTS
 from ._http import HttpClient
@@ -29,8 +26,6 @@ def _normalize_url(url: str) -> str:
 def fetch_subtitle_meta(client: HttpClient, aid: int, cid: int) -> list[dict[str, Any]]:
     """从 player/wbi/v2 获取字幕元数据列表（该视频无字幕时为空列表）。"""
     nav = fetch_nav(client)
-    if not nav.is_login:
-        raise AuthRequiredError("subtitles")
     params = sign_params(
         {"aid": aid, "cid": cid, "isGaiaAvoided": 0, "web_location": 1315873},
         nav.img_key,

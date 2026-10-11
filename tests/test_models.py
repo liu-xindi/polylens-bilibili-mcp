@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any
 
 import pytest
@@ -185,21 +185,21 @@ def test_to_toon_empty_list_still_declares_columns() -> None:
 
 def test_video_info_keeps_all_fields_including_none_and_zero() -> None:
     """字段恒在：没有的项是 null，为 0 的项照常给出 0。"""
-    d = VideoInfo(id="BV1", title="t", view_count=0).model_dump()
+    d = asdict(VideoInfo(id="BV1", title="t", view_count=0))
     assert d["view_count"] == 0
     assert d["author"] is None
     assert set(d) == {"id", "title", "author", "author_url", "url", "published_at", "summary",
-                      "copyright", "staff",
+                      "staff",
                       "duration_sec", "total_duration_sec", "view_count", "danmaku_count_total",
                       "comment_count",
                       "like_count", "favorite_count", "share_count", "coin_count",
-                      "cover_url", "part_count", "category_id",
+                      "cover_url", "part_count",
                       "current_page", "current_part"}
 
 
 def test_video_info_has_no_parts_list() -> None:
     """分段清单走 get_parts，不塞进单条元信息里。"""
-    assert "parts" not in VideoInfo(id="BV1", title="t").model_dump()
+    assert "parts" not in asdict(VideoInfo(id="BV1", title="t"))
 
 
 def test_parts_toon_shape() -> None:

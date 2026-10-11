@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import replace
 from typing import Any
 from unittest.mock import patch
@@ -15,7 +16,9 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from polylens_bilibili import __version__
 from polylens_bilibili import server as server_mod
 from polylens_bilibili.api._subtitles import SubtitleTrack
+from polylens_bilibili.errors import AuthRequiredError
 from polylens_bilibili.models import (
+    Batched,
     Comment,
     FeedItem,
     LoginCheckResult,
@@ -68,7 +71,7 @@ class _StubClient:
     """替身：工具层只经 _client() 拿它，这里按用例需要覆写方法。"""
 
     def __init__(self, **behaviour: Any) -> None:
-        self._behaviour = behaviour
+        self._behaviour = {"require_login": None, **behaviour}
 
     def __getattr__(self, name: str) -> Any:
         if name in self._behaviour:
@@ -118,25 +121,41 @@ def test_content_tools_declare_url_and_page() -> None:
             return {t.name: t.inputSchema for t in (await client.list_tools()).tools}
 
     schemas = _run(scenario)
-    for name in ("get_video_info", "get_subtitles"):
-        assert "page" in schemas[name]["properties"], name
-    # 评论按整片取，与分段无关
-    for name in ("get_comments", "get_comment_replies"):
+    assert "page" in schemas["get_subtitles"]["properties"]
+    # 评论按整片取，与分段无关；批量工具的分段写在每项的 ?p= 里
+    for name in ("get_comments", "get_comment_replies", "get_video_info", "get_parts"):
         assert "page" not in schemas[name]["properties"], name
 
 
 # ── 内容类工具的返回结构 ────────────────────────────────────────────────────
 
 
-def test_get_video_info_returns_named_fields() -> None:
-    info = VideoInfo(id="BV1xx", title="标题", author="up主", view_count=0)
-    with _with_client(get_video_info=info):
-        payload = _payload("get_video_info", {"url": BV_URL})
-    assert payload["id"] == "BV1xx"
-    assert payload["title"] == "标题"
-    assert payload["view_count"] == 0  # 0 是真实值，照常给出
-    assert payload["like_count"] is None  # 平台没给的项为 null，字段仍在
+def test_get_video_info_one_row_per_input() -> None:
+    results = [
+        Batched("BV1a", VideoInfo(id="BV1a", title="标题", view_count=0)),
+        Batched("BV1bad", error="视频不存在：BV1bad"),
+    ]
+    with _with_client(get_video_infos=results):
+        payload = _payload(
+            "get_video_info",
+            {"videos": ["BV1a", "BV1bad"], "jq": "map({input, id, view_count, error})"},
+        )
+    assert payload["count"] == 2 and payload["failed"] == 1
+    assert payload["videos"] == (
+        "videos[2]{input,id,view_count,error}:\n"
+        "  BV1a,BV1a,0,\n"
+        "  BV1bad,,,视频不存在：BV1bad"
+    )
+    assert payload["jq_count"] == 2
     assert payload["elapsed_s"] >= 0
+
+
+def test_get_video_info_columns_wrap_fields_with_input_and_error() -> None:
+    with _with_client(get_video_infos=[Batched("BV1a", VideoInfo(id="BV1a", title="t"))]):
+        payload = _payload("get_video_info", {"videos": ["BV1a"], "jq": "."})
+    header = payload["videos"].splitlines()[0]
+    assert header.startswith("videos[1]{input,id,title,")
+    assert header.endswith(",current_page,current_part,error}:")
 
 
 def _comment(cid: str, content: str, **kw: Any) -> Comment:
@@ -249,15 +268,29 @@ def test_get_subtitles_passes_lang_through() -> None:
     assert seen == {"video_id": "BV1xx411c7mD", "page": 3, "lang": "en-US"}
 
 
-def test_get_parts_returns_toon() -> None:
+def test_get_parts_groups_by_video() -> None:
     parts = [VideoPart(page=1, part="片头", duration=60.0),
              VideoPart(page=2, part="正片", duration=600.0)]
-    with _with_client(get_parts=parts):
-        payload = _payload("get_parts", {"jq": ".", "url": BV_URL})
-    assert payload["count"] == 2
-    assert payload["parts"] == (
-        "parts[2]{page,part,duration}:\n  1,片头,60\n  2,正片,600"
-    )
+    results = [Batched("BV1a", parts), Batched("BV1bad", error="视频不存在：BV1bad")]
+    with _with_client(get_parts=results):
+        payload = _payload("get_parts", {"jq": ".", "videos": ["BV1a", "BV1bad"]})
+    ok, bad = payload["results"]
+    assert ok["input"] == "BV1a" and ok["count"] == 2
+    assert ok["parts"] == "parts[2]{page,part,duration}:\n  1,片头,60\n  2,正片,600"
+    assert ok["error"] is None
+    assert bad == {"input": "BV1bad", "count": 0, "parts": None, "jq_count": None,
+                   "error": "视频不存在：BV1bad"}
+
+
+def test_get_parts_jq_runs_per_video() -> None:
+    results = [
+        Batched("BV1a", [VideoPart(page=1, part="甲", duration=1.0)]),
+        Batched("BV1b", [VideoPart(page=1, part="乙", duration=1.0),
+                         VideoPart(page=2, part="丙", duration=1.0)]),
+    ]
+    with _with_client(get_parts=results):
+        payload = _payload("get_parts", {"jq": "length", "videos": ["BV1a", "BV1b"]})
+    assert [r["parts"] for r in payload["results"]] == ["1", "2"]
 
 
 def test_search_returns_toon_and_paging() -> None:
@@ -374,6 +407,84 @@ def test_complete_qr_login_pending_states(status: QrStatus) -> None:
     assert payload["status"] == status.value
 
 
+# ── 登录 ────────────────────────────────────────────────────────────────────
+
+_PLATFORM_CALLS = [
+    ("get_video_info", {"videos": ["BV1a"], "jq": "."}),
+    ("get_parts", {"videos": ["BV1a"], "jq": "."}),
+    ("get_up_info", {"authors": ["2"], "jq": "."}),
+    ("get_comments", {"url": BV_URL, "count": 1, "batch_id": "b1", "jq": "."}),
+    ("get_comment_replies", {"url": BV_URL, "comment_ids": ["1"], "pages": 1, "jq": "."}),
+    ("get_subtitles", {"url": BV_URL, "jq": "."}),
+    ("search_videos", {"query": "x", "jq": "."}),
+    ("suggest_keywords", {"term": "x"}),
+    ("list_up_videos", {"author_url": "2", "jq": "."}),
+    ("get_feed", {"jq": "."}),
+]
+
+
+class _LoggedOut:
+    """require_login 报未登录；其余方法一旦被调用就记下来。"""
+
+    def __init__(self) -> None:
+        self.used: list[str] = []
+
+    def require_login(self) -> None:
+        raise AuthRequiredError("all")
+
+    def __getattr__(self, name: str) -> Any:
+        self.used.append(name)
+        raise AssertionError(f"未登录时不应调用 {name}")
+
+
+def test_platform_tools_cover_every_login_tool() -> None:
+    exempt = {"get_login_status", "logout", "start_qr_login", "complete_qr_login", "get_version"}
+    assert {name for name, _ in _PLATFORM_CALLS} == _TOOL_NAMES - exempt
+
+
+@pytest.mark.parametrize(("tool", "args"), _PLATFORM_CALLS)
+def test_platform_tools_refuse_when_logged_out(tool: str, args: dict[str, Any]) -> None:
+    stub = _LoggedOut()
+    with patch.object(server_mod, "_client", lambda: stub):
+        result = _call(tool, args)
+    assert result.isError
+    assert "需要登录" in result.content[0].text
+    assert stub.used == []
+
+
+def test_login_free_tools_skip_the_check() -> None:
+    stub = _LoggedOut()
+    stub.get_login_status = lambda: False  # type: ignore[method-assign]
+    with patch.object(server_mod, "_client", lambda: stub), \
+            patch.object(server_mod, "_latest_release", lambda: None):
+        assert _payload("get_login_status") == {"is_login": False}
+        assert _payload("get_version")["latest"] is None
+
+
+def test_elapsed_s_includes_login_check() -> None:
+    def slow_check() -> None:
+        time.sleep(0.3)
+
+    with _with_client(require_login=slow_check, suggest=["x"]):
+        payload = _payload("suggest_keywords", {"term": "x"})
+    assert payload["elapsed_s"] >= 0.3
+
+
+def test_tool_reuses_the_client_that_checked_login() -> None:
+    """核验与取数据用同一个 client，nav 的结果才能在本次调用内复用。"""
+    made: list[_StubClient] = []
+
+    def factory(cookie: str = "") -> _StubClient:
+        made.append(_StubClient(suggest=["x"]))
+        return made[-1]
+
+    with patch.object(server_mod, "BilibiliClient", factory), \
+            patch.object(server_mod, "load_cookie", lambda: ""):
+        _payload("suggest_keywords", {"term": "x"})
+        _payload("suggest_keywords", {"term": "x"})
+    assert len(made) == 2  # 每次调用一个，调用之间不复用
+
+
 # ── 错误上浮 ────────────────────────────────────────────────────────────────
 
 
@@ -391,9 +502,10 @@ def test_tool_outcomes_are_logged(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("INFO", logger="polylens_bilibili"):
         with _with_client(get_login_status=True):
             _call("get_login_status")
-        _call("get_video_info", {"url": "https://example.com/x"})
-        with _with_client(get_video_info=broken):
-            assert _call("get_video_info", {"url": BV_URL}).isError
+        with _with_client():
+            _call("get_subtitles", {"url": "https://example.com/x", "jq": "."})
+        with _with_client(get_subtitles=broken):
+            assert _call("get_subtitles", {"url": BV_URL, "jq": "."}).isError
     ok, failed, crashed = [r for r in caplog.records if r.name == "polylens_bilibili.server"]
     assert ok.levelname == "INFO" and "get_login_status" in ok.getMessage()
     assert failed.levelname == "WARNING" and "无法从输入解析" in failed.getMessage()
@@ -415,7 +527,7 @@ def test_list_tools_accept_jq() -> None:
     with_jq = {name for name, schema in schemas.items() if "jq" in schema["properties"]}
     assert with_jq == {
         "search_videos", "list_up_videos", "get_feed", "get_comments", "get_subtitles",
-        "get_comment_replies", "get_parts",
+        "get_comment_replies", "get_parts", "get_video_info", "get_up_info",
     }
     subtitles_desc = schemas["get_subtitles"]["properties"]["jq"]["description"]
     assert "start,end,content" in subtitles_desc
@@ -475,10 +587,18 @@ def test_jq_is_required() -> None:
 
 def test_bad_jq_is_tool_error_with_fields() -> None:
     parts = [VideoPart(page=1, part="片头", duration=60.0)]
-    with _with_client(get_parts=parts):
-        result = _call("get_parts", {"url": BV_URL, "jq": ".["})
+    with _with_client(get_parts=[Batched("BV1a", parts)]):
+        result = _call("get_parts", {"videos": ["BV1a"], "jq": ".["})
     assert result.isError
     assert "page,part,duration" in result.content[0].text
+
+
+def test_bad_jq_on_batch_lists_input_and_error_columns() -> None:
+    with _with_client(get_up_infos=[Batched("42", UpInfo(mid=42))]):
+        result = _call("get_up_info", {"authors": ["42"], "jq": ".["})
+    assert result.isError
+    assert "可用字段：input,mid," in result.content[0].text
+    assert ",face_url,error。" in result.content[0].text
 
 
 # ── 并发 ────────────────────────────────────────────────────────────────────
@@ -522,7 +642,7 @@ def test_slow_tool_does_not_block_other_tools() -> None:
 @pytest.mark.parametrize(
     ("tool", "args", "behaviour"),
     [
-        ("get_video_info", {"url": BV_URL}, {"get_video_info": VideoInfo(id="B", title="t")}),
+        ("get_video_info", {"videos": [BV_URL], "jq": "."}, {"get_video_infos": []}),
         (
             "get_comments", {"jq": ".", "url": BV_URL, "batch_id": "b1", "count": 1},
             {"get_comments": Page(items=[])},
@@ -623,10 +743,12 @@ def test_get_comment_replies_reports_cache_once_per_call() -> None:
 
 def test_get_video_info_reports_total_duration() -> None:
     info = VideoInfo(id="BV1", title="t", duration_sec=79.0, total_duration_sec=81976.0)
-    with _with_client(get_video_info=info):
-        payload = _payload("get_video_info", {"url": BV_URL})
-    assert payload["duration_sec"] == 79.0
-    assert payload["total_duration_sec"] == 81976.0
+    with _with_client(get_video_infos=[Batched("BV1", info)]):
+        payload = _payload(
+            "get_video_info",
+            {"videos": ["BV1"], "jq": ".[0] | [.duration_sec, .total_duration_sec]"},
+        )
+    assert payload["videos"] == "[79,81976]"
 
 
 # ── 搜索联想 ────────────────────────────────────────────────────────────────
@@ -671,19 +793,26 @@ def test_list_up_videos_resolves_link_and_returns_toon() -> None:
     assert payload["has_more"] is True and payload["next_cursor"] == "1"
 
 
-def test_get_up_info_resolves_link() -> None:
-    seen: list[int] = []
+def test_get_up_info_one_row_per_input() -> None:
+    seen: list[list[str]] = []
 
-    def get_up_info(mid: int) -> UpInfo:
-        seen.append(mid)
-        return UpInfo(mid=mid, author="老何", follower_count=0)
+    def get_up_infos(inputs: list[str]) -> list[Batched[UpInfo]]:
+        seen.append(inputs)
+        return [Batched(inputs[0], UpInfo(mid=42, author="老何", follower_count=0)),
+                Batched(inputs[1], error="UP 主不存在：mid 9")]
 
-    with _with_client(get_up_info=get_up_info):
-        payload = _payload("get_up_info", {"author_url": "https://space.bilibili.com/42"})
-    assert seen == [42]
-    assert payload["author"] == "老何"
-    assert payload["follower_count"] == 0
-    assert payload["vip"] is None
+    with _with_client(get_up_infos=get_up_infos):
+        payload = _payload("get_up_info", {
+            "authors": ["https://space.bilibili.com/42", "9"],
+            "jq": "map({input, author, follower_count, vip, error})",
+        })
+    assert seen == [["https://space.bilibili.com/42", "9"]]
+    assert payload["count"] == 2 and payload["failed"] == 1
+    assert payload["authors"] == (
+        "authors[2]{input,author,follower_count,vip,error}:\n"
+        "  \"https://space.bilibili.com/42\",老何,0,,\n"
+        "  \"9\",,,,UP 主不存在：mid 9"
+    )
     assert payload["elapsed_s"] >= 0
 
 

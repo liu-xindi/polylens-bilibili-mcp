@@ -11,6 +11,7 @@ import functools
 import io
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import fields
@@ -27,8 +28,9 @@ from . import __version__
 from .client import BilibiliClient, resolve_up, resolve_video
 from .credentials import delete_cookie, load_cookie, save_cookie
 from .errors import BilibiliError
-from .jqfilter import encode_items
+from .jqfilter import encode_batch, encode_items
 from .models import (
+    Batched,
     Comment,
     FeedItem,
     QrStatus,
@@ -48,6 +50,7 @@ _URL_DESC = "视频链接、b23.tv 短链，或裸 BV/av 号；含链接的分�
 _PAGE_DESC = (
     "分段序号，1 起。不传时取链接里的 ?p=N，两者都没有则第 1 段。单段视频忽略此项。"
 )
+_VIDEOS_DESC = "视频列表，每项为链接、b23.tv 短链或裸 BV/av 号。"
 _CURSOR_DESC = "续取游标：不传从头开始，回传上次返回的 next_cursor 取下一批。"
 
 # 评论只有两层，二级评论的 reply_count 恒为 0
@@ -60,10 +63,12 @@ def _jq_desc(
     paged: bool,
     scope: str | None = None,
     exclude: frozenset[str] = frozenset(),
+    batch: bool = False,
 ) -> str:
     scope = scope or ("本批条目" if paged else "全部条目")
     shown = [f for f in fields(item_type) if f.name not in exclude]
-    columns = ",".join(f.name for f in shown)
+    names = [f.name for f in shown]
+    columns = ",".join(["input", *names, "error"] if batch else names)
     bulky = "、".join(
         f.name + (f"（{f.metadata['bulky']}）" if f.metadata["bulky"] else "")
         for f in shown
@@ -74,6 +79,7 @@ def _jq_desc(
         f"必填的 jq 表达式。输入是{scope}组成的数组，每条字段：{columns}。"
         + (f"体积大、多数任务用不到的字段：{bulky}；特定任务需要时照常使用。" if bulky else "")
         + (paging if paged else "")
+        + ("每个输入一条，取不到的只有 input 与 error 有值。" if batch else "")
         + "结果为字符串时原样返回，其他结果编码为表格或 JSON；结果为数组时 jq_count 是其长度。"
     )
 
@@ -90,8 +96,11 @@ class _Timed(BaseModel):
     elapsed_s: float | None = None
 
 
-class VideoInfoResult(VideoInfo, _Timed):
-    pass
+class VideoInfoResult(_Timed):
+    count: int
+    failed: int
+    videos: str
+    jq_count: int | None = None
 
 
 class CommentsResult(_Timed):
@@ -132,11 +141,16 @@ class SubtitlesResult(_Timed):
     jq_count: int | None = None
 
 
-class PartsResult(_Timed):
-    video_id: str
-    count: int
-    parts: str
+class PartsItem(BaseModel):
+    input: str
+    count: int = 0
+    parts: str | None = None
     jq_count: int | None = None
+    error: str | None = None
+
+
+class PartsResult(_Timed):
+    results: list[PartsItem]
 
 
 class SearchResult(_Timed):
@@ -163,8 +177,11 @@ class UpVideosResult(_Timed):
     next_cursor: str | None = None
 
 
-class UpInfoResult(UpInfo, _Timed):
-    pass
+class UpInfoResult(_Timed):
+    count: int
+    failed: int
+    authors: str
+    jq_count: int | None = None
 
 
 class FeedResult(_Timed):
@@ -195,13 +212,41 @@ class QrCheckResult(BaseModel):
 # ── 工具层辅助 ──────────────────────────────────────────────────────────────
 
 
+_call_scope = threading.local()
+
+
 def _client() -> BilibiliClient:
-    return BilibiliClient(load_cookie())
+    """需要登录的工具在本次调用内共用核验登录时建的 client，其余每次新建。"""
+    return getattr(_call_scope, "client", None) or BilibiliClient(load_cookie())
+
+
+def _logged_in(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """调用前联网核验登录态，未登录直接报错。在工作线程里运行，client 按线程隔离。
+
+    未登录时平台多半不报错而是给残缺结果：评论只给几条并声称到底，字幕返回空轨道，
+    投稿列表常回 412，调用方都看不出是未登录造成的。
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        client = _client()
+        client.require_login()
+        _call_scope.client = client
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            del _call_scope.client
+
+    return wrapper
 
 
 def _resolve(url: str, page: int | None = None) -> tuple[str, int]:
     """解析出视频号与分段序号。短链展开要带 cookie 才能过平台对网页域名的风控。"""
     return resolve_video(url, page, cookie=load_cookie())
+
+
+def _failed(results: list[Batched[Any]]) -> int:
+    return sum(r.error is not None for r in results)
 
 
 def _timed(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -267,7 +312,9 @@ def _make_qr_png(url: str) -> bytes:
     return buf.getvalue()
 
 
-_SERVER_INSTRUCTIONS = "读取 B 站视频信息的工具集。"
+_SERVER_INSTRUCTIONS = (
+    "读取 B 站视频信息的工具集。除登录相关工具与 get_version 外，都需要先登录。"
+)
 
 _PYPI_JSON = "https://pypi.org/pypi/polylens-bilibili-mcp/json"
 
@@ -326,32 +373,40 @@ def create_server(
     # FastMCP 1.x 不收 version，不设时握手报的是 mcp 库自身的版本。
     mcp._mcp_server.version = __version__
 
-    def tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Any]:
-        return lambda fn: mcp.tool(**kwargs)(_in_thread(fn))
+    # 需要登录的工具计时包住登录核验：核验那次 nav 也是本次调用的服务端耗时。
+    def tool(*, login: bool = True, **kwargs: Any) -> Callable[[Callable[..., Any]], Any]:
+        return lambda fn: mcp.tool(**kwargs)(_in_thread(_timed(_logged_in(fn)) if login else fn))
 
     if oauth_provider is not None and auth_secret:
         from .oauth import register_consent_route
         register_consent_route(mcp, oauth_provider, auth_secret)
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def get_video_info(
-        url: Annotated[str, Field(description=_URL_DESC)],
-        page: Annotated[int | None, Field(description=_PAGE_DESC)] = None,
+        videos: Annotated[
+            list[str],
+            Field(description=_VIDEOS_DESC + "分段写在项里，如 BV1xx?p=2，不写为第 1 段。"),
+        ],
+        *,
+        jq: Annotated[
+            str, Field(description=_jq_desc(VideoInfo, paged=False, batch=True))
+        ],
     ) -> VideoInfoResult:
         """含标题、作者、发布时间、简介与各项统计。
 
         统计口径：评论数含二级评论；弹幕数与整片时长是全部分段之和，
-        当前段时长只算这一段。
+        当前段时长只算这一段。单段视频忽略 ?p=，current_page 为空。
+        staff 仅联合投稿有值，格式为"名字(角色,mid)"，以分号分隔。
 
         (video info, metadata, stats)
         """
-        video_id, part = _resolve(url, page)
-        info = _client().get_video_info(video_id, part)
-        return VideoInfoResult(**info.model_dump())
+        results = _client().get_video_infos(videos)
+        encoded, jq_count = encode_batch("videos", results, VideoInfo, jq)
+        return VideoInfoResult(
+            count=len(results), failed=_failed(results), videos=encoded, jq_count=jq_count
+        )
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def get_comments(
         url: Annotated[str, Field(description=_URL_DESC)],
         count: Annotated[
@@ -400,7 +455,7 @@ def create_server(
         *,
         jq: Annotated[str, Field(description=_jq_desc(Comment, paged=True))],
     ) -> CommentsResult:
-        """不含二级评论，二级评论通过 get_comment_replies 获取。需要登录。
+        """不含二级评论，二级评论通过 get_comment_replies 获取。
 
         image_urls、link_titles 是字符串，多个时以换行分隔。
 
@@ -426,7 +481,6 @@ def create_server(
         )
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def get_comment_replies(
         url: Annotated[str, Field(description=_URL_DESC)],
         comment_ids: Annotated[
@@ -457,7 +511,7 @@ def create_server(
             ),
         ],
     ) -> CommentRepliesResult:
-        """二级评论按时间正序排列。需要登录。
+        """二级评论按时间正序排列。
 
         total 是该主评论下平台能列出的二级评论总数，可用来算页数。
         withheld 是该主评论下平台未列出的二级评论条数（已删除或被折叠）。
@@ -498,7 +552,6 @@ def create_server(
         )
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def get_subtitles(
         url: Annotated[str, Field(description=_URL_DESC)],
         page: Annotated[int | None, Field(description=_PAGE_DESC)] = None,
@@ -517,7 +570,7 @@ def create_server(
             Field(description=_jq_desc(SubtitleEntry, paged=False)),
         ],
     ) -> SubtitlesResult:
-        """逐句返回。需要登录。字幕可能为 AI 生成或机器翻译，存在误差。
+        """逐句返回。字幕可能为 AI 生成或机器翻译，存在误差。
 
         (subtitles, captions, transcript)
         """
@@ -534,28 +587,27 @@ def create_server(
         )
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def get_parts(
-        url: Annotated[str, Field(description=_URL_DESC)],
+        videos: Annotated[list[str], Field(description=_VIDEOS_DESC)],
         *,
         jq: Annotated[
             str,
-            Field(description=_jq_desc(VideoPart, paged=False)),
+            Field(description=_jq_desc(VideoPart, paged=False, scope="单个视频的分段")),
         ],
     ) -> PartsResult:
-        """即分 P。单段视频返回一项。(video parts, pages)"""
-        video_id, _ = _resolve(url)
-        parts = _client().get_parts(video_id)
-        encoded, jq_count = encode_items("parts", parts, VideoPart, jq)
-        return PartsResult(
-            video_id=video_id,
-            count=len(parts),
-            parts=encoded,
-            jq_count=jq_count,
-        )
+        """即分 P，每个视频一组。单段视频返回一项。(video parts, pages)"""
+        results = []
+        for r in _client().get_parts(videos):
+            if r.value is None:
+                results.append(PartsItem(input=r.input, error=r.error))
+                continue
+            parts, jq_count = encode_items("parts", r.value, VideoPart, jq)
+            results.append(
+                PartsItem(input=r.input, count=len(r.value), parts=parts, jq_count=jq_count)
+            )
+        return PartsResult(results=results)
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def search_videos(
         query: Annotated[
             str,
@@ -590,7 +642,6 @@ def create_server(
         )
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def suggest_keywords(
         term: Annotated[str, Field(description="已输入的关键词，可以只是开头几个字。")],
     ) -> SuggestResult:
@@ -604,7 +655,6 @@ def create_server(
         return SuggestResult(count=len(suggestions), suggestions=suggestions)
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def list_up_videos(
         author_url: Annotated[
             str, Field(description="UP 主空间链接（其他工具返回的 author_url），或数字 mid。")
@@ -624,7 +674,7 @@ def create_server(
             Field(description=_jq_desc(UpVideoItem, paged=True)),
         ],
     ) -> UpVideosResult:
-        """每批最多 40 条。total 是视频总数，带 keyword 时为匹配数。需要登录。
+        """每批最多 40 条。total 是视频总数，带 keyword 时为匹配数。
 
         (uploader videos, channel uploads, other videos by this author)
         """
@@ -645,21 +695,25 @@ def create_server(
         )
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def get_up_info(
-        author_url: Annotated[
-            str, Field(description="UP 主空间链接（其他工具返回的 author_url），或数字 mid。")
+        authors: Annotated[
+            list[str],
+            Field(description="UP 主列表，每项为空间链接（其他工具返回的 author_url）或数字 mid。"),
         ],
+        *,
+        jq: Annotated[str, Field(description=_jq_desc(UpInfo, paged=False, batch=True))],
     ) -> UpInfoResult:
         """含昵称、签名、等级、粉丝数、关注数、总获赞、认证、大会员等。
 
         (uploader profile, channel info, followers)
         """
-        info = _client().get_up_info(resolve_up(author_url))
-        return UpInfoResult(**info.model_dump())
+        results = _client().get_up_infos(authors)
+        encoded, jq_count = encode_batch("authors", results, UpInfo, jq)
+        return UpInfoResult(
+            count=len(results), failed=_failed(results), authors=encoded, jq_count=jq_count
+        )
 
     @tool(annotations=_READS_PLATFORM)
-    @_timed
     def get_feed(
         *,
         jq: Annotated[
@@ -675,7 +729,7 @@ def create_server(
         feed, jq_count = encode_items("feed", items, FeedItem, jq)
         return FeedResult(count=len(items), feed=feed, jq_count=jq_count)
 
-    @tool(annotations=_READS_PLATFORM)
+    @tool(login=False, annotations=_READS_PLATFORM)
     def get_login_status() -> LoginStateResult:
         """联网向平台核验。
 
@@ -687,6 +741,7 @@ def create_server(
 
     # 网页端会缓存工具说明，说明里写死启动时的版本，与 running 对比即可看出缓存是否过期。
     @tool(
+        login=False,
         annotations=_READS_PLATFORM,
         description=(
             f"本说明对应版本 {__version__}。running 与之不同表示工具说明是旧缓存，需重连；"
@@ -696,7 +751,7 @@ def create_server(
     def get_version() -> VersionResult:
         return VersionResult(running=__version__, latest=_latest_release())
 
-    @tool(annotations=_LOCAL_ONLY)
+    @tool(login=False, annotations=_LOCAL_ONLY)
     def logout() -> LogoutResult:
         """删除本地保存的凭据。(log out, sign out)"""
         deleted = delete_cookie()
@@ -707,7 +762,7 @@ def create_server(
 
     # structured_output=False：FastMCP 默认会把返回值复制进 structuredContent，对本工具即把图片的
     # base64 又装一份；部分客户端会将它序列化为文本传给模型，同一张图被当文本重复计入上下文。
-    @tool(structured_output=False, annotations=_READS_PLATFORM)
+    @tool(login=False, structured_output=False, annotations=_READS_PLATFORM)
     def start_qr_login() -> list[ImageContent | TextContent]:
         """返回内联二维码图片和对应的链接 url。不写入本地凭据，由 complete_qr_login 写入。
 
@@ -728,7 +783,7 @@ def create_server(
             TextContent(type="text", text=json.dumps(meta, ensure_ascii=False)),
         ]
 
-    @tool(annotations=_WRITES_CREDENTIAL)
+    @tool(login=False, annotations=_WRITES_CREDENTIAL)
     def complete_qr_login(
         key: Annotated[str, Field(description="start_qr_login 返回的 key。")],
     ) -> QrCheckResult:
