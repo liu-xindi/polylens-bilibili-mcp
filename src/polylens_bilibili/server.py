@@ -30,7 +30,6 @@ from .errors import BilibiliError
 from .jqfilter import encode_items
 from .models import (
     Comment,
-    Danmaku,
     FeedItem,
     QrStatus,
     SearchItem,
@@ -122,13 +121,6 @@ class CommentRepliesResult(_Timed):
     results: list[ReplyThreadItem]
     from_cache: bool = False
     cached_at: str | None = None
-
-
-class DanmakuResult(_Timed):
-    video_id: str
-    count: int
-    danmaku: str
-    jq_count: int | None = None
 
 
 class SubtitlesResult(_Timed):
@@ -225,9 +217,9 @@ def _timed(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def _in_thread(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """同步工具放到工作线程里跑，免得一个慢调用（如评论、弹幕限速排队）卡住整个服务。
+    """同步工具放到工作线程里跑，免得一个慢调用（如评论限速排队）卡住整个服务。
 
-    评论、弹幕请求各自由限速器的锁排队，其他工具互不等待。
+    评论请求由限速器的锁排队，其他工具互不等待。
     mcp 库把工具异常转成错误结果返回而不记日志，所以在这里记。参数不记，其中有扫码登录的 key。
     """
     name = fn.__name__
@@ -507,41 +499,6 @@ def create_server(
 
     @tool(annotations=_READS_PLATFORM)
     @_timed
-    def get_danmaku(
-        url: Annotated[str, Field(description=_URL_DESC)],
-        count: Annotated[
-            int,
-            Field(
-                description=(
-                    "取多少条弹幕。取该段里 heat 最高的这么多条，结果仍按时间轴排序；"
-                    "达到或超过平台给出的条数即全部返回。"
-                    "heat 是平台给每条弹幕的标记，约 1-10 的档位，同档内不再细分。"
-                )
-            ),
-        ],
-        page: Annotated[int | None, Field(description=_PAGE_DESC)] = None,
-        *,
-        jq: Annotated[
-            str,
-            Field(description=_jq_desc(Danmaku, paged=False, scope="按 count 选出的弹幕")),
-        ],
-    ) -> DanmakuResult:
-        """timestamp 是弹幕在视频中的秒数。
-
-        平台可能只给出部分弹幕，少于视频信息里的弹幕数。
-        限速每分钟约 10 段。
-
-        (danmaku, bullet comments)
-        """
-        video_id, part = _resolve(url, page)
-        bullets = _client().get_danmaku(video_id, count=count, page=part)
-        danmaku, jq_count = encode_items("danmaku", bullets, Danmaku, jq)
-        return DanmakuResult(
-            video_id=video_id, count=len(bullets), danmaku=danmaku, jq_count=jq_count
-        )
-
-    @tool(annotations=_READS_PLATFORM)
-    @_timed
     def get_subtitles(
         url: Annotated[str, Field(description=_URL_DESC)],
         page: Annotated[int | None, Field(description=_PAGE_DESC)] = None,
@@ -596,29 +553,6 @@ def create_server(
             parts=encoded,
             jq_count=jq_count,
         )
-
-    # structured_output=False：FastMCP 默认会把返回值复制进 structuredContent，对本工具即把图片的
-    # base64 又装一份；部分客户端会将它序列化为文本传给模型，同一张图被当文本重复计入上下文。
-    @tool(structured_output=False, annotations=_READS_PLATFORM)
-    @_timed
-    def get_frame(
-        url: Annotated[str, Field(description=_URL_DESC)],
-        timestamp: Annotated[
-            float, Field(description="视频内秒数，如 10.5。")
-        ],
-        page: Annotated[int | None, Field(description=_PAGE_DESC)] = None,
-    ) -> list[ImageContent | TextContent]:
-        """返回内联 JPEG 图片。需要登录。
-
-        (video frame, screenshot)
-        """
-        video_id, part = _resolve(url, page)
-        jpeg = _client().get_frame(video_id, timestamp=timestamp, page=part)
-        meta = {"video_id": video_id, "page": part}
-        return [
-            _png_block(jpeg, "image/jpeg"),
-            TextContent(type="text", text=json.dumps(meta, ensure_ascii=False)),
-        ]
 
     @tool(annotations=_READS_PLATFORM)
     @_timed
@@ -771,7 +705,8 @@ def create_server(
             message="已退出登录，本地凭据已删除。" if deleted else "本地没有保存的凭据。",
         )
 
-    # structured_output=False 同 get_frame：二维码内联返回，不进结构化通道。
+    # structured_output=False：FastMCP 默认会把返回值复制进 structuredContent，对本工具即把图片的
+    # base64 又装一份；部分客户端会将它序列化为文本传给模型，同一张图被当文本重复计入上下文。
     @tool(structured_output=False, annotations=_READS_PLATFORM)
     def start_qr_login() -> list[ImageContent | TextContent]:
         """返回内联二维码图片和对应的链接 url。不写入本地凭据，由 complete_qr_login 写入。

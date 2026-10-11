@@ -16,7 +16,6 @@ ENDPOINTS: dict[str, str] = {
     "replies_main": "/x/v2/reply/wbi/main",
     "replies_sub": "/x/v2/reply/reply",
     "player_v2": "/x/player/wbi/v2",
-    "playurl": "/x/player/wbi/playurl",
     "qrcode_generate": "/x/passport-login/web/qrcode/generate",
     "qrcode_poll": "/x/passport-login/web/qrcode/poll",
     "search_type": "/x/web-interface/wbi/search/type",
@@ -24,7 +23,6 @@ ENDPOINTS: dict[str, str] = {
     "space_videos": "/x/space/wbi/arc/search",
     "up_card": "/x/web-interface/card",
     "feed_rcmd": "/x/web-interface/wbi/index/top/feed/rcmd",
-    "danmaku_xml": "/x/v1/dm/list.so",
 }
 
 # 搜索最多翻到第几页。平台结果封顶 1000 条（34 页），再往后的页码会被夹回最后一页。
@@ -36,9 +34,6 @@ FEED_PAGE_SIZE = 30
 
 # 二级评论单页条数，平台封顶 20。
 REPLY_PAGE_SIZE = 20
-
-# 截帧画质：720p。
-FRAME_QUALITY_ID = 64
 
 # WBI 签名：mixin key 重排表 + 过滤字符（algorithm 在 _signing.py，这里只放数值）。
 WBI_MIXIN_KEY_ENC_TAB: list[int] = [

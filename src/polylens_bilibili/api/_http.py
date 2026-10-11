@@ -10,7 +10,6 @@ import math
 import threading
 import time
 import urllib.error
-import zlib
 from collections import deque
 from collections.abc import Callable
 from typing import Any
@@ -26,15 +25,12 @@ _log = logging.getLogger("polylens_bilibili")
 # 主评论与二级评论被风控时同进同退（实测主评论被拦时换排序、换视频都不通；二级评论未单独验证，
 # 按同一套算）。其余接口互不牵连：评论被拦期间搜索、字幕、视频信息照常可用。
 _COMMENT_PATHS = frozenset({ENDPOINTS["replies_main"], ENDPOINTS["replies_sub"]})
-_DANMAKU_PATH = ENDPOINTS["danmaku_xml"]
 _RECENT_KEPT = 30
 
 
 def _group(path: str) -> str:
     if path in _COMMENT_PATHS:
         return "comments"
-    if path == _DANMAKU_PATH:
-        return "danmaku"
     return path
 
 
@@ -118,8 +114,8 @@ class _Guard:
     节流：相邻两次请求的发出时刻至少隔 interval 秒，跨调用、跨会话都算。均匀摊开而不是只限
     每分钟总数：平台窗口长度没测准，攒成一阵突发的形态也没测过。
 
-    熔断：收到 412 即停用 _COOLDOWN 秒，期间不发请求。评论与弹幕实测都约 15 分钟后恢复
-    （评论 10-07 为 14.6–15.2 分钟，弹幕 10-09 为 15.3–16.3 分钟）。到期放行一个请求试探，
+    熔断：收到 412 即停用 _COOLDOWN 秒，期间不发请求。评论实测约 15 分钟后恢复
+    （10-07 为 14.6–15.2 分钟）。到期放行一个请求试探，
     仍被拦则每隔 _RECHECK 秒再试一次。其他信号不熔断。
     """
 
@@ -189,9 +185,7 @@ class _Guard:
 def _new_guards() -> dict[str, _Guard]:
     # 评论：10-07 实测每分钟 60 页在第 52 页被拦，20、40 页各连续 10 分钟没触发；取每 2 秒一页。
     # 风控按账号算：换排序、换视频、重新登录、换出口 IP 都不通。
-    # 弹幕：10-09 实测每 6 秒一次连续 6 分钟没触发；每 3 秒一次在第 15 次被拦，21 秒连发 15 次
-    # 也触发了。按出口 IP 算，匿名请求同样被拦。取测过的每 6 秒一次。
-    return {"comments": _Guard("评论接口", 2.0), "danmaku": _Guard("弹幕接口", 6.0)}
+    return {"comments": _Guard("评论接口", 2.0)}
 
 
 _guards = _new_guards()
@@ -238,10 +232,6 @@ class HttpClient:
         return self._guarded(
             path, lambda: self._get_json(path, params, referer, base_url, allow_codes)
         )
-
-    def get_api_bytes(self, path: str, params: dict[str, Any]) -> bytes:
-        """请求不返回 JSON 的平台接口（如弹幕 XML），与 get_json 共用节流、熔断与风控识别。"""
-        return self._guarded(path, lambda: self._fetch(path, params, _DEFAULT_REFERER, None))
 
     def _guarded(self, path: str, call: Callable[[], Any]) -> Any:
         guard = _guards.get(_group(path))  # 每次现取：测试会整个替换 _guards
@@ -327,14 +317,3 @@ class HttpClient:
             body = resp.read()
             set_cookies: list[str] = resp.info().get_all("Set-Cookie") or []
         return body, set_cookies
-
-
-def inflate_deflate(raw: bytes) -> str:
-    """解压 list.so 弹幕接口的 raw-deflate 字节为文本。"""
-    try:
-        return zlib.decompress(raw, -zlib.MAX_WBITS).decode("utf-8", errors="replace")
-    except zlib.error:
-        try:
-            return zlib.decompress(raw).decode("utf-8", errors="replace")
-        except zlib.error:
-            return raw.decode("utf-8", errors="replace")

@@ -1,6 +1,6 @@
 # polylens-bilibili-mcp
 
-读取 B 站视频、评论、弹幕、字幕等公开信息的 MCP 服务，支持用 jq 在返回前筛选和裁剪结果，可本地运行，也可通过 HTTP + OAuth 远程接入。只读，不向平台写入任何数据。
+读取 B 站视频、评论、字幕等公开信息的 MCP 服务，支持用 jq 在返回前筛选和裁剪结果，可本地运行，也可通过 HTTP + OAuth 远程接入。只读，不向平台写入任何数据。
 
 ## 工具
 
@@ -13,22 +13,20 @@
 | `list_up_videos` | UP 主投稿，每批最多 40 条，可按最新、播放、收藏排序 |
 | `get_video_info` | 标题、作者、发布时间、简介与各项统计 |
 | `get_parts` | 分 P 清单 |
-| `get_danmaku` | 弹幕，按热度取一批，按时间轴返回 |
 | `get_comments` | 主评论，热度序或时间序，游标续取 |
 | `get_comment_replies` | 某条主评论下的二级评论 |
 | `get_subtitles` | 逐句字幕，含起止秒数，可指定语种 |
-| `get_frame` | 截取指定时刻的一帧画面 |
 | `start_qr_login` · `complete_qr_login` | 扫码登录 |
 | `get_login_status` · `logout` | 查询登录状态、退出登录 |
 | `get_version` | 运行中的版本与 PyPI 最新版本，用于判断工具说明是否为旧缓存、服务是否需要升级 |
 
 ## 登录
 
-`get_comments`、`get_comment_replies`、`get_subtitles`、`get_frame`、`list_up_videos` 需要登录。`start_qr_login` 返回二维码，用 B 站 App 扫码确认后，由 `complete_qr_login` 完成登录。凭据保存在 `~/.cache/polylens-bilibili/cookie`（设置了 `XDG_CACHE_HOME` 时位于其下），`logout` 会删除它。
+`get_comments`、`get_comment_replies`、`get_subtitles`、`list_up_videos` 需要登录。`start_qr_login` 返回二维码，用 B 站 App 扫码确认后，由 `complete_qr_login` 完成登录。凭据保存在 `~/.cache/polylens-bilibili/cookie`（设置了 `XDG_CACHE_HOME` 时位于其下），`logout` 会删除它。
 
 ## 用 jq 精简返回
 
-`search_videos`、`list_up_videos`、`get_feed`、`get_parts`、`get_comments`、`get_comment_replies`、`get_danmaku`、`get_subtitles` 必须传 `jq` 参数，在返回前筛选条目或裁剪字段，减少上下文占用。表达式由模型自行编写，传 `.` 则原样返回，例如：
+`search_videos`、`list_up_videos`、`get_feed`、`get_parts`、`get_comments`、`get_comment_replies`、`get_subtitles` 必须传 `jq` 参数，在返回前筛选条目或裁剪字段，减少上下文占用。表达式由模型自行编写，传 `.` 则原样返回，例如：
 
 | 用途 | 表达式 |
 |---|---|
@@ -38,7 +36,7 @@
 
 ## 安装
 
-需要 [uv](https://docs.astral.sh/uv/)，没有 Python 3.13+ 时 uv 会自动下载；`get_frame` 另需 ffmpeg。
+需要 [uv](https://docs.astral.sh/uv/)，没有 Python 3.13+ 时 uv 会自动下载。
 
 接入 Claude Code：
 
@@ -95,12 +93,12 @@ uvx polylens-bilibili-mcp
 
 命令行优先于环境变量。http 模式下公网地址和口令缺一则拒绝启动。开启 `INSECURE_NO_AUTH=1` 后任何能连到端口的人都能调用全部工具，包括使用已保存的登录凭据。
 
-## 评论与弹幕限速
+## 评论限速
 
 平台会拦截频繁的请求，被拦后约 15 分钟恢复。为此：
 
-- 评论每分钟最多 30 页，弹幕每分钟最多 10 个分P，超出时排队等待。
-- 被拦后对应工具停用 15 分钟，恢复后自动可用，其他工具不受影响。
+- 评论每分钟最多 30 页，超出时排队等待。
+- 被拦后评论工具停用 15 分钟，恢复后自动可用，其他工具不受影响。
 - 评论结果按整次调用缓存：除 jq 外参数相同的调用直接返回缓存，不占额度，被拦期间也能返回。只缓存完整的结果，不设有效期，总量超过约 50 MB 时淘汰最久没用的，服务重启后清空。
 
 ## 免责声明与许可证

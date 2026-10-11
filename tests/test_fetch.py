@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import http.client
-import io
 import json
 import urllib.error
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from polylens_bilibili.api._comments import fetch_comments, fetch_replies
-from polylens_bilibili.api._constants import USER_AGENT
-from polylens_bilibili.api._danmaku import fetch_danmaku, top_by_heat
 from polylens_bilibili.api._http import BilibiliHttpError, HttpClient, _RateLimited
 from polylens_bilibili.api._signing import NavInfo
 from polylens_bilibili.api._subtitles import fetch_subtitles
@@ -496,78 +492,6 @@ def test_fetch_subtitles_requires_login():
     client.get_json.assert_not_called()
 
 
-# ── fetch_danmaku ───────────────────────────────────────────────────
-
-_DANMAKU_XML = """<?xml version="1.0" encoding="UTF-8"?>
-<i>
-  <d p="3.0,1,25,16777215,1700000000,0,aaa,11111,5">bullet A</d>
-  <d p="1.0,5,25,255,1700000001,0,bbb,22222,8">bullet B</d>
-</i>"""
-
-
-def test_fetch_danmaku_delegates_to_parse():
-    client = MagicMock()
-    client.get_api_bytes.return_value = _DANMAKU_XML.encode()
-    bullets = fetch_danmaku(client, cid=12345)
-    assert len(bullets) == 2
-    assert bullets[0].timestamp == 1.0  # 已排序
-
-
-def test_fetch_danmaku_url_includes_cid():
-    client = MagicMock()
-    client.get_api_bytes.return_value = b"<i></i>"
-    fetch_danmaku(client, cid=9999)
-    assert client.get_api_bytes.call_args[0] == ("/x/v1/dm/list.so", {"oid": 9999})
-
-
-# ── 弹幕取样 ────────────────────────────────────────────────────────────────
-
-
-def _dm(ts: float, heat: int):
-    from polylens_bilibili.models import Danmaku
-
-    return Danmaku(content=f"d{ts:g}", timestamp=ts, heat=heat)
-
-
-def test_top_by_heat_spreads_over_time_within_one_tier() -> None:
-    """heat 只有十档且每档条数相等，小 count 会整批落在最高档。
-
-    同档之间无从比较，取最早的几条会让长视频的取样全挤在开头。
-    """
-    pool = [_dm(float(i), 10) for i in range(100)]
-    got = top_by_heat(pool, 5)
-    stamps = [b.timestamp for b in got]
-    assert stamps == sorted(stamps)
-    assert stamps[0] == 0.0 and stamps[-1] == 99.0  # 首尾都取到
-    gaps = [b - a for a, b in zip(stamps, stamps[1:], strict=False)]
-    assert max(gaps) - min(gaps) <= 1  # 间隔基本均匀
-
-
-def test_top_by_heat_prefers_higher_tiers_before_spreading() -> None:
-    """先取满整档，不满的那一档才等距挑。"""
-    pool = [_dm(float(i), 10) for i in range(3)] + [_dm(float(10 + i), 5) for i in range(20)]
-    got = top_by_heat(pool, 6)
-    assert sum(1 for b in got if b.heat == 10) == 3  # 高档全要
-    assert sum(1 for b in got if b.heat == 5) == 3
-
-
-def test_top_by_heat_is_reproducible() -> None:
-    """同一输入两次调用结果相同：随机抽样会破坏这一点。"""
-    pool = [_dm(float(i), 10) for i in range(50)]
-    assert [b.timestamp for b in top_by_heat(pool, 7)] == [
-        b.timestamp for b in top_by_heat(pool, 7)
-    ]
-
-
-@pytest.mark.parametrize("count", [1, 2, 7, 50, 51, 200])
-def test_top_by_heat_shape_holds(count: int) -> None:
-    pool = [_dm(float(i), (i % 10) + 1) for i in range(50)]
-    got = top_by_heat(pool, count)
-    assert len(got) == min(count, len(pool))
-    assert len({id(b) for b in got}) == len(got)                       # 无重复
-    assert [b.timestamp for b in got] == sorted(b.timestamp for b in got)
-
-
 # ── HttpClient 的风控判定 ───────────────────────────────────────────────────
 
 
@@ -719,160 +643,6 @@ def test_fetch_comments_rate_limited_on_first_page_raises():
     with _nav_patch("_comments"), _SIGN_PATCH:
         with pytest.raises(RateLimitedError):
             fetch_comments(client, aid=100, count=20)
-
-
-# ── fetch_frame 的前置检查 ──────────────────────────────────────────────────
-
-
-def test_fetch_frame_without_ffmpeg_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
-    from polylens_bilibili.api import _frame
-
-    monkeypatch.setattr(_frame.shutil, "which", lambda _name: None)
-    client = MagicMock()
-    with pytest.raises(BilibiliError):
-        _frame.fetch_frame(cast(HttpClient, client), "BV1xx", 0, 1.0)
-    client.get_json.assert_not_called()  # 预检在任何网络动作之前
-
-
-def test_capture_frame_keeps_credentials_out_of_ffmpeg_argv(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    """ffmpeg 只该看到本地代理地址。
-
-    改用 ffmpeg 自带的 -headers 也能跑通，但那会把 Cookie 放进命令行，而进程 argv 在
-    没挂 hidepid 的 Linux 上同机可读。本地代理存在的理由就是这个，这里把它钉住。
-    """
-    from polylens_bilibili.api import _frame
-
-    client = MagicMock()
-    client.cookie = "SESSDATA=secret-value; bili_jct=token"
-    seen: list[list[str]] = []
-
-    out = tmp_path / "f.jpg"
-
-    def _fake_run(cmd, **kwargs):
-        seen.append(list(cmd))
-        out.write_bytes(b"\xff\xd8jpeg")  # 出图了，产物检查才放行
-        return SimpleNamespace(returncode=0, stderr=b"")
-
-    monkeypatch.setattr(_frame.subprocess, "run", _fake_run)
-    _frame._capture_frame(cast(HttpClient, client), "https://cdn.example/v.m4s", 1.0, str(out))
-
-    argv = " ".join(seen[0])
-    assert "secret-value" not in argv
-    assert "-headers" not in seen[0]
-    assert "http://127.0.0.1:" in argv
-
-
-def test_capture_frame_proxy_forwards_credentials_upstream(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """凭据仍要送到 CDN，只是走代理的上游请求，不走命令行。"""
-    from polylens_bilibili.api import _frame
-
-    client = MagicMock()
-    client.cookie = "SESSDATA=secret-value"
-    handler_cls: Any = _frame._make_proxy_handler(
-        cast(HttpClient, client), "https://cdn.example/v.m4s"
-    )
-    captured: dict[str, str] = {}
-
-    class _FakeResp:
-        status = 200
-        headers = {"Content-Type": "video/mp4"}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def read(self, _n=None):
-            return b""
-
-    def _open(req, timeout=None):
-        captured.update(req.headers)
-        return _FakeResp()
-
-    client._opener.open = _open
-    handler = handler_cls.__new__(handler_cls)
-    handler.headers = {"Range": "bytes=0-"}
-    handler.wfile = io.BytesIO()
-    handler.send_response = lambda *a: None
-    handler.send_header = lambda *a: None
-    handler.end_headers = lambda: None
-    handler._proxy()
-
-    # urllib 会把 header 名规范成首字母大写
-    assert captured["Cookie"] == "SESSDATA=secret-value"
-    assert captured["Range"] == "bytes=0-"          # Range 透传，ffmpeg 才能按需取
-    assert captured["User-agent"] == USER_AGENT     # CDN 拒非浏览器 UA，缺它就是 403
-
-
-@pytest.mark.parametrize("make_output", [False, True])
-def test_capture_frame_rejects_empty_output_despite_zero_exit(
-    monkeypatch: pytest.MonkeyPatch, tmp_path, make_output: bool
-) -> None:
-    """ffmpeg 退出码为 0 不代表出了图。
-
-    实测 ffmpeg 6.1 在目标时刻取不到画面时返回 0，只在 stderr 写一句
-    "Output file is empty, nothing was encoded"，产物是空文件或根本没建。
-    不查产物就会把空字节当成截帧结果，最终拼成一个 data 为空的图片块。
-    """
-    from polylens_bilibili.api import _frame
-
-    out = tmp_path / "f.jpg"
-    if make_output:
-        out.write_bytes(b"")  # NamedTemporaryFile 留下的空占位
-
-    def _fake_run(cmd, **kwargs):
-        return SimpleNamespace(
-            returncode=0,
-            stderr=b"[out#0/image2] Output file is empty, nothing was encoded",
-        )
-
-    monkeypatch.setattr(_frame.subprocess, "run", _fake_run)
-    client = MagicMock()
-    client.cookie = ""
-    with pytest.raises(RuntimeError):
-        _frame._capture_frame(cast(HttpClient, client), "https://cdn/a", 1.0, str(out))
-
-
-def test_fetch_frame_never_returns_empty_bytes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """产物为空时要落到候选重试与统一报错上，不能把空字节交出去。"""
-    from polylens_bilibili.api import _frame
-
-    monkeypatch.setattr(_frame.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
-    monkeypatch.setattr(
-        _frame, "_fetch_playurl",
-        lambda client, bvid, cid: {"dash": {"video": [
-            {"id": 64, "codecs": "avc1", "baseUrl": "https://cdn/a", "backupUrl": ["https://cdn/b"]}
-        ]}},
-    )
-    tried: list[str] = []
-
-    def _empty(client, url, ts, out):
-        tried.append(url)
-        raise RuntimeError("ffmpeg 退出码为 0 但没有产出画面")
-
-    monkeypatch.setattr(_frame, "_capture_frame", _empty)
-    with pytest.raises(BilibiliError):
-        _frame.fetch_frame(MagicMock(), "BV1xx", 200, 214.9)
-    assert tried == ["https://cdn/a", "https://cdn/b"]  # 备用地址也试过
-
-
-def test_fetch_frame_requires_login(monkeypatch: pytest.MonkeyPatch) -> None:
-    """未登录时平台只给到 480P 而不报错，故取播放地址前先判登录态。"""
-    from polylens_bilibili.api import _frame
-
-    monkeypatch.setattr(_frame.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
-    client = MagicMock()
-    with _nav_patch("_frame", _ANONYMOUS):
-        with pytest.raises(AuthRequiredError):
-            _frame.fetch_frame(client, "BV1xx", 200, 1.0)
-    client.get_json.assert_not_called()
 
 
 # ── 字幕语种 ────────────────────────────────────────────────────────────────
@@ -1110,20 +880,6 @@ def test_comment_requests_spread_evenly(clock: _Clock):
     assert clock.slept == [2.0] * 30
 
 
-_DM = "/x/v1/dm/list.so"
-
-
-def test_danmaku_requests_spaced_apart(clock: _Clock):
-    """弹幕每 6 秒一次：每 3 秒一次时第 15 次被拦（10-09 实测），与评论各算各的。"""
-    client = _http()
-    with _answer(client, b"", _OK, b""):
-        client.get_api_bytes(_DM, {"oid": 1})
-        client.get_json(_MAIN)
-        clock.now += 1.0
-        client.get_api_bytes(_DM, {"oid": 2})
-    assert clock.slept == [5.0]
-
-
 def test_waiting_request_does_not_hold_up_one_in_flight():
     """排队的请求在锁外等：先发出的请求作答后不必陪它睡完。"""
     import threading
@@ -1131,7 +887,7 @@ def test_waiting_request_does_not_hold_up_one_in_flight():
 
     from polylens_bilibili.api._http import _Guard
 
-    guard = _Guard("弹幕接口", 0.5)
+    guard = _Guard("评论接口", 0.5)
     guard.acquire()
     queued = threading.Thread(target=guard.acquire)
     queued.start()
@@ -1146,9 +902,9 @@ def test_breaker_opened_while_waiting_refuses_queued_request(clock: _Clock):
     from polylens_bilibili.api import _http as http_module
 
     client = _http()
-    guard = http_module._guards["danmaku"]
-    with _answer(client, b""):
-        client.get_api_bytes(_DM, {"oid": 1})
+    guard = http_module._guards["comments"]
+    with _answer(client, _OK):
+        client.get_json(_MAIN)
     real_sleep = clock.sleep
 
     def sleep_then_block(seconds: float) -> None:
@@ -1157,19 +913,8 @@ def test_breaker_opened_while_waiting_refuses_queued_request(clock: _Clock):
 
     guard._sleep = sleep_then_block
     with _answer(client) as sent, pytest.raises(_RateLimited):
-        client.get_api_bytes(_DM, {"oid": 2})
-    assert sent.call_count == 0
-
-
-def test_danmaku_block_opens_its_own_breaker(clock: _Clock):
-    client = _http()
-    with _answer(client, _BLOCKED, _OK) as sent:
-        with pytest.raises(RateLimitedError, match="弹幕接口触发风控（412），约 15 分钟后再试"):
-            fetch_danmaku(client, cid=1)
-        with pytest.raises(RateLimitedError, match="弹幕接口"):
-            fetch_danmaku(client, cid=2)
         client.get_json(_MAIN)
-    assert sent.call_count == 2
+    assert sent.call_count == 0
 
 
 def test_partial_comments_carry_cooldown(clock: _Clock):

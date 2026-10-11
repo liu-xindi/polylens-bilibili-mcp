@@ -157,44 +157,6 @@ def _view_stub(duration: float | None = 100.0) -> dict[str, Any]:
     }
 
 
-def test_get_frame_rejects_negative_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
-    called: list[int] = []
-    monkeypatch.setattr(
-        BilibiliClient, "_view", lambda self, vid: called.append(1) or _view_stub()
-    )
-    with pytest.raises(BilibiliError):
-        BilibiliClient().get_frame("BV1xx", timestamp=-5.0)
-    assert not called  # 校验在取视频数据之前
-
-
-def test_get_frame_rejects_timestamp_beyond_duration(monkeypatch: pytest.MonkeyPatch) -> None:
-    """超出时长要报错：ffmpeg 会给最后一帧，静默返回会让模型以为截到了指定时刻。"""
-    monkeypatch.setattr(BilibiliClient, "_view", lambda self, vid: _view_stub(duration=30.0))
-    with pytest.raises(BilibiliError):
-        BilibiliClient().get_frame("BV1xx", timestamp=99.0)
-
-
-def test_get_frame_rejects_timestamp_equal_to_duration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """时间轴是 [0, duration)，等于时长那一刻没有帧。
-
-    放过去的话 ffmpeg 会失败，报出来的形状与其他参数边界不一致。
-    """
-    monkeypatch.setattr(BilibiliClient, "_view", lambda self, vid: _view_stub(duration=30.0))
-    with pytest.raises(BilibiliError):
-        BilibiliClient().get_frame("BV1xx", timestamp=30.0)
-
-
-def test_get_frame_allows_timestamp_when_duration_unknown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """取不到时长时只校验下界，不拦上界。"""
-    monkeypatch.setattr(BilibiliClient, "_view", lambda self, vid: _view_stub(duration=None))
-    monkeypatch.setattr(client_mod, "fetch_frame", lambda http, bvid, cid, at: b"jpeg")
-    assert BilibiliClient().get_frame("BV1xx", timestamp=9999.0) == b"jpeg"
-
-
 # ── 短链展开 ────────────────────────────────────────────────────────────────
 
 

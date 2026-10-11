@@ -11,7 +11,6 @@ import pytest
 
 from polylens_bilibili.models import (
     Comment,
-    Danmaku,
     SearchItem,
     SubtitleEntry,
     VideoInfo,
@@ -131,11 +130,10 @@ def test_comments_toon_carries_images_and_link_titles() -> None:
     assert '"黑神话 | 钟馗\\n游科 访谈"' in lines[1]
 
 
-def test_danmaku_toon_keeps_zero_timestamp() -> None:
-    """弹幕 timestamp=0（视频第 0 秒）是真信号，照常写出。"""
-    bullets = [Danmaku(content="x", timestamp=0.0, heat=5)]
-    out = to_toon("danmaku", bullets, Danmaku)
-    assert out == "danmaku[1]{content,timestamp,heat}:\n  x,0,5"
+def test_subtitles_toon_keeps_zero_start() -> None:
+    """start=0（视频第 0 秒）是真信号，照常写出。"""
+    out = to_toon("subtitles", [SubtitleEntry(start=0.0, end=1.5, content="x")], SubtitleEntry)
+    assert out == "subtitles[1]{start,end,content}:\n  0,1.5,x"
 
 
 def test_subtitles_toon_shape() -> None:

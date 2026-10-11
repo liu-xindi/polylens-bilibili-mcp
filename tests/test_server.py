@@ -17,7 +17,6 @@ from polylens_bilibili import server as server_mod
 from polylens_bilibili.api._subtitles import SubtitleTrack
 from polylens_bilibili.models import (
     Comment,
-    Danmaku,
     FeedItem,
     LoginCheckResult,
     Page,
@@ -35,9 +34,8 @@ from polylens_bilibili.models import (
 
 BV_URL = "https://www.bilibili.com/video/BV1xx411c7mD/"
 _TOOL_NAMES = {
-    "get_video_info", "get_parts", "get_comments", "get_comment_replies", "get_danmaku",
-    "get_subtitles", "get_frame", "search_videos", "suggest_keywords", "list_up_videos",
-    "get_up_info", "get_feed",
+    "get_video_info", "get_parts", "get_comments", "get_comment_replies", "get_subtitles",
+    "search_videos", "suggest_keywords", "list_up_videos", "get_up_info", "get_feed",
     "get_login_status", "logout", "start_qr_login", "complete_qr_login", "get_version",
 }
 
@@ -120,7 +118,7 @@ def test_content_tools_declare_url_and_page() -> None:
             return {t.name: t.inputSchema for t in (await client.list_tools()).tools}
 
     schemas = _run(scenario)
-    for name in ("get_video_info", "get_danmaku", "get_subtitles", "get_frame"):
+    for name in ("get_video_info", "get_subtitles"):
         assert "page" in schemas[name]["properties"], name
     # 评论按整片取，与分段无关
     for name in ("get_comments", "get_comment_replies"):
@@ -228,27 +226,6 @@ def test_get_comment_replies_surfaces_withheld() -> None:
     assert [r["total"] for r in payload["results"]] == [34, None]
 
 
-def test_get_danmaku_returns_toon() -> None:
-    bullets = [Danmaku(content="弹", timestamp=0.0, heat=7)]
-    with _with_client(get_danmaku=bullets):
-        payload = _payload("get_danmaku", {"jq": ".", "url": BV_URL, "count": 1})
-    assert payload["count"] == 1
-    assert payload["danmaku"] == "danmaku[1]{content,timestamp,heat}:\n  弹,0,7"
-
-
-def test_get_danmaku_jq_runs_on_selected_bullets() -> None:
-    bullets = [Danmaku(content=c, timestamp=t, heat=5) for c, t in
-               [("来了", 1.0), ("来了", 2.0), ("好看", 30.0)]]
-    with _with_client(get_danmaku=bullets):
-        payload = _payload(
-            "get_danmaku",
-            {"url": BV_URL, "count": 3, "jq": "unique_by(.content) | map(.content)"},
-        )
-    assert payload["count"] == 3
-    assert payload["danmaku"] == '["好看","来了"]'
-    assert payload["jq_count"] == 2
-
-
 def test_get_subtitles_returns_toon_with_lang_info() -> None:
     track = SubtitleTrack([SubtitleEntry(start=1.0, end=2.0, content="一句")], "ai-zh",
                           ["en-US", "ai-zh"])
@@ -316,33 +293,7 @@ def test_search_passes_order_through() -> None:
     assert seen["order"] == "most_danmaku"
 
 
-# ── 内联图片的两个工具 ──────────────────────────────────────────────────────
-
-
-def test_get_frame_returns_inline_image_and_meta() -> None:
-    with _with_client(get_frame=b"\xff\xd8fakejpeg"):
-        result = _call("get_frame", {"url": BV_URL, "timestamp": 1.5})
-    blocks = result.content
-    assert blocks[0].type == "image"
-    assert blocks[0].mimeType == "image/jpeg"
-    meta = json.loads(blocks[-1].text)
-    assert meta["video_id"] == "BV1xx411c7mD"
-    assert meta["page"] == 1
-    assert meta["elapsed_s"] >= 0
-    assert next(iter(meta)) == "elapsed_s"
-
-
-def test_get_frame_emits_no_structured_content() -> None:
-    """图片的 base64 不进结构化通道，避免被当文本重复计入上下文。"""
-    with _with_client(get_frame=b"\xff\xd8fakejpeg"):
-        result = _call("get_frame", {"url": BV_URL, "timestamp": 1.0})
-    assert result.structuredContent is None
-
-
-def test_get_frame_page_flows_into_meta() -> None:
-    with _with_client(get_frame=b"\xff\xd8x"):
-        result = _call("get_frame", {"url": BV_URL + "?p=3", "timestamp": 1.0})
-    assert json.loads(result.content[-1].text)["page"] == 3
+# ── 内联图片 ────────────────────────────────────────────────────────────────
 
 
 def test_start_qr_login_returns_inline_qr_image() -> None:
@@ -464,7 +415,7 @@ def test_list_tools_accept_jq() -> None:
     with_jq = {name for name, schema in schemas.items() if "jq" in schema["properties"]}
     assert with_jq == {
         "search_videos", "list_up_videos", "get_feed", "get_comments", "get_subtitles",
-        "get_comment_replies", "get_parts", "get_danmaku",
+        "get_comment_replies", "get_parts",
     }
     subtitles_desc = schemas["get_subtitles"]["properties"]["jq"]["description"]
     assert "start,end,content" in subtitles_desc

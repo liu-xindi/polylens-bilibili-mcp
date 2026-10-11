@@ -244,19 +244,6 @@ class VideoPart:
     duration: float | None  # 该段时长秒数
 
 
-@dataclass(slots=True)
-class Danmaku:
-    """一条弹幕。
-
-    不带 id：弹幕之间无引用关系，平台内部 id 对消费端零效用。
-    heat 为 B站弹幕的热度档位（约 1-10），数值越高越热门。
-    """
-
-    content: str
-    timestamp: float
-    heat: int
-
-
 class StaffMember(BaseModel):
     name: str | None = None
     role: str | None = None

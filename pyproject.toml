@@ -1,14 +1,14 @@
 [project]
 name = "polylens-bilibili-mcp"
 version = "0.5.4"
-description = "读取 B 站视频、评论、弹幕、字幕等公开信息的 MCP 服务，支持用 jq 在返回前筛选和裁剪结果，可本地运行，也可通过 HTTP + OAuth 远程接入。MCP server for reading Bilibili videos, comments, danmaku and subtitles, with jq filtering to keep responses small. Runs locally over stdio or remotely over Streamable HTTP with OAuth."
+description = "读取 B 站视频、评论、字幕等公开信息的 MCP 服务，支持用 jq 在返回前筛选和裁剪结果，可本地运行，也可通过 HTTP + OAuth 远程接入。MCP server for reading Bilibili videos, comments and subtitles, with jq filtering to keep responses small. Runs locally over stdio or remotely over Streamable HTTP with OAuth."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "liu-xindi" }]
 requires-python = ">=3.13"
 keywords = [
-    "bilibili", "mcp", "mcp-server", "model-context-protocol", "claude", "jq", "danmaku", "subtitles",
+    "bilibili", "mcp", "mcp-server", "model-context-protocol", "claude", "jq", "subtitles",
     "remote-mcp", "streamable-http", "oauth", "claude-ai",
 ]
 classifiers = [

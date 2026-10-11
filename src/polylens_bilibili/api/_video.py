@@ -1,6 +1,6 @@
 """视频元信息：从 view 接口数据提取并映射为 VideoInfo。
 
-多段视频：一个 BV 下含多段，每段有自己的 cid（弹幕/字幕/截帧按段取）。page 为 1 起的分段序号，
+多段视频：一个 BV 下含多段，每段有自己的 cid（字幕按段取）。page 为 1 起的分段序号，
 对应链接里的 ?p=N。
 """
 
@@ -36,20 +36,6 @@ def _resolve_page(view: dict[str, Any], page: int) -> dict[str, Any]:
     if 1 <= page <= len(pages) and pages[page - 1].get("cid"):
         return pages[page - 1]
     raise BilibiliError(f"该视频共 {len(pages)} 段，没有第 {page} 段")
-
-
-def cid_for_page(view: dict[str, Any], page: int) -> int:
-    """第 page 段的 cid。弹幕/字幕/截帧接口需要它。"""
-    return int(_resolve_page(view, page)["cid"])
-
-
-def clip_duration(view: dict[str, Any], cid: int) -> float | None:
-    """截帧所用分段的时长（秒）：多段取对应段，否则取整片。无法确定时返回 None。"""
-    for page in view.get("pages") or []:
-        if page.get("cid") == cid and page.get("duration"):
-            return float(page["duration"])
-    dur = view.get("duration")
-    return float(dur) if dur else None
 
 
 # 平台对这几种情况只给"请求错误""啥都木有"之类的原文，看不出是视频号的问题

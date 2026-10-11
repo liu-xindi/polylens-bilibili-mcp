@@ -15,9 +15,7 @@ from urllib.request import Request, urlopen
 
 from .api._comments import fetch_comments, fetch_replies
 from .api._constants import SHORT_LINK_HOSTS, USER_AGENT
-from .api._danmaku import fetch_danmaku, top_by_heat
 from .api._feed import fetch_feed
-from .api._frame import fetch_frame
 from .api._http import HttpClient, _RateLimited
 from .api._login import check_qr_login, start_qr_login
 from .api._search import fetch_search
@@ -26,11 +24,10 @@ from .api._space import fetch_up_videos
 from .api._subtitles import SubtitleTrack, fetch_subtitles
 from .api._suggest import fetch_suggest
 from .api._up import fetch_up_info
-from .api._video import build_video_info, cid_for_page, clip_duration, fetch_view, list_parts
+from .api._video import build_video_info, fetch_view, list_parts
 from .errors import BilibiliError
 from .models import (
     Comment,
-    Danmaku,
     FeedItem,
     LoginCheckResult,
     Page,
@@ -212,13 +209,6 @@ class BilibiliClient:
                 start_page=start_page, pages=pages, refresh=refresh,
             )
 
-    def get_danmaku(
-        self, video_id: str, *, count: int, page: int = 1
-    ) -> list[Danmaku]:
-        view = self._view(video_id)
-        bullets = fetch_danmaku(self._http, cid_for_page(view, page))
-        return top_by_heat(bullets, count)
-
     def get_subtitles(
         self, video_id: str, page: int = 1, lang: str | None = None
     ) -> SubtitleTrack:
@@ -228,24 +218,6 @@ class BilibiliClient:
 
     def get_parts(self, video_id: str) -> list[VideoPart]:
         return list_parts(self._view(video_id))
-
-    def get_frame(self, video_id: str, *, timestamp: float, page: int = 1) -> bytes:
-        at = float(timestamp)
-        if at < 0:
-            raise BilibiliError(f"timestamp 不能为负数，收到 {at:g}")
-        view = self._view(video_id)
-        bvid = str(view.get("bvid") or video_id)
-        cid = cid_for_page(view, page)
-        duration = clip_duration(view, cid)
-        # 时间轴是 [0, duration)：等于时长那一刻没有帧，与超出时长同样拦下，但分开措辞——
-        # 用「超出」说相等，同一个数字既是超出的又是被超出的，读着像 bug。
-        if duration is not None and at == duration:
-            raise BilibiliError(
-                f"请求的时间 {at:g} 秒等于视频时长，最后一刻没有画面；改用更小的值。"
-            )
-        if duration is not None and at > duration:
-            raise BilibiliError(f"请求的时间 {at:g} 秒超出视频时长（约 {duration:g} 秒）")
-        return fetch_frame(self._http, bvid, cid, at)
 
     def search(
         self, *, query: str, cursor: str | None = None, order: str = "relevance"
