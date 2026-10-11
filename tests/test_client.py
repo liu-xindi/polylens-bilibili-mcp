@@ -16,6 +16,7 @@ from polylens_bilibili.client import (
     _id_params,
     resolve_up,
     resolve_video,
+    resolve_video_part,
 )
 from polylens_bilibili.errors import BilibiliError, RateLimitedError
 from polylens_bilibili.models import Page, UpInfo
@@ -194,6 +195,61 @@ def test_batch_keeps_going_after_an_item_fails(monkeypatch: pytest.MonkeyPatch) 
         "视频不存在：BV1gone", "无法从输入解析 BV/av 号：不是视频", None,
     ]
     assert results[2].value is not None
+
+
+def _fake_counts(monkeypatch: pytest.MonkeyPatch, fail: dict[int, Exception]) -> list[int]:
+    asked: list[int] = []
+
+    def count(http: Any, aid: int, cid: int, duration: float | None) -> int:
+        asked.append(cid)
+        if cid in fail:
+            raise fail[cid]
+        return cid * 10
+
+    monkeypatch.setattr(BilibiliClient, "_view", lambda self, vid: _multi_view(vid))
+    monkeypatch.setattr(client_mod, "fetch_danmaku_count", count)
+    return asked
+
+
+def test_danmaku_counts_whole_video_or_one_part(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不带 ?p= 取全部分段；带 ?p=N 只取那一段，各项独立成组。"""
+    _fake_counts(monkeypatch, {})
+    whole, one = BilibiliClient().get_danmaku_counts(["BV1a", "BV1a?p=2"])
+    assert [(r.page, r.danmaku_count) for r in whole.value or []] == [(1, 110), (2, 120), (3, 130)]
+    assert [(r.page, r.part, r.danmaku_count) for r in one.value or []] == [(2, "P2", 120)]
+
+
+def test_danmaku_count_failure_stays_in_its_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_counts(monkeypatch, {12: BilibiliError("弹幕信息响应无法解析")})
+    (result,) = BilibiliClient().get_danmaku_counts(["BV1a"])
+    assert [(r.danmaku_count, r.error) for r in result.value or []] == [
+        (110, None), (None, "弹幕信息响应无法解析"), (130, None),
+    ]
+
+
+def test_danmaku_counts_stop_requesting_after_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked = _fake_counts(monkeypatch, {11: RateLimitedError("取弹幕数触发风控（412），稍后重试。")})
+    first, second = BilibiliClient().get_danmaku_counts(["BV1a", "BV1b"])
+    assert asked == [11]
+    rows = [*(first.value or []), *(second.value or [])]
+    assert {r.error for r in rows} == {"取弹幕数触发风控（412），稍后重试。"}
+
+
+@pytest.mark.parametrize(("expanded", "page"), [
+    ("https://www.bilibili.com/video/BV1a?p=1", None),
+    ("https://www.bilibili.com/video/BV1a?p=4", 4),
+])
+def test_resolve_video_part_from_short_link(
+    monkeypatch: pytest.MonkeyPatch, expanded: str, page: int | None
+) -> None:
+    """短链展开后总带 p=1，分不清是否指定了第 1 段，按没指定算。"""
+    monkeypatch.setattr(client_mod, "_expand_short_link", lambda text, cookie="": expanded)
+    assert resolve_video_part("https://b23.tv/abc") == ("BV1a", page)
+
+
+def test_resolve_video_part_page_only_when_written() -> None:
+    assert resolve_video_part("BV1a") == ("BV1a", None)
+    assert resolve_video_part("https://www.bilibili.com/video/BV1a/?p=3") == ("BV1a", 3)
 
 
 def test_batch_stops_requesting_after_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:

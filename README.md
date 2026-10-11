@@ -13,6 +13,7 @@
 | `list_up_videos` | UP 主投稿，每批最多 40 条，可按最新、播放、收藏排序 |
 | `get_video_info` | 标题、作者、发布时间、简介与各项统计，可一次查多个视频或分 P |
 | `get_parts` | 分 P 清单，可一次查多个视频 |
+| `get_danmaku_counts` | 每个分 P 的弹幕数，可一次查多个视频 |
 | `get_comments` | 主评论，热度序或时间序，游标续取 |
 | `get_comment_replies` | 某条主评论下的二级评论 |
 | `get_subtitles` | 逐句字幕，含起止秒数，可指定语种 |
@@ -26,7 +27,7 @@
 
 ## 用 jq 精简返回
 
-`search_videos`、`list_up_videos`、`get_feed`、`get_video_info`、`get_up_info`、`get_parts`、`get_comments`、`get_comment_replies`、`get_subtitles` 必须传 `jq` 参数，在返回前筛选条目或裁剪字段，减少上下文占用。表达式由模型自行编写，传 `.` 则原样返回，例如：
+`search_videos`、`list_up_videos`、`get_feed`、`get_video_info`、`get_up_info`、`get_parts`、`get_danmaku_counts`、`get_comments`、`get_comment_replies`、`get_subtitles` 必须传 `jq` 参数，在返回前筛选条目或裁剪字段，减少上下文占用。表达式由模型自行编写，传 `.` 则原样返回，例如：
 
 | 用途 | 表达式 |
 |---|---|

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylens_bilibili.api._comments import fetch_comments, fetch_replies
+from polylens_bilibili.api._danmaku import fetch_danmaku_count, parse_danmaku_count
 from polylens_bilibili.api._http import BilibiliHttpError, HttpClient, _RateLimited
 from polylens_bilibili.api._signing import NavInfo
 from polylens_bilibili.api._subtitles import fetch_subtitles
@@ -1123,3 +1124,51 @@ def test_hot_failed_batch_is_not_cached():
             fetch_comments(client, aid=100, count=1, batch_id="b1")
         retry = fetch_comments(client, aid=100, count=1, batch_id="b1")
     assert [c.content for c in retry.items] == ["a"]
+
+
+# ── 弹幕数 ──────────────────────────────────────────────────────────────────
+
+
+def _pb_varint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte, n = n & 0x7F, n >> 7
+        out.append(byte | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+# 与官方播放器抓到的响应同形：字段 4 为分段信息 {1: 360000, 2: 5}，字段 5 为一段提示文案
+_SEG_INFO = b"\x08" + _pb_varint(360000) + b"\x10\x05"
+_TIP = "开启后优化弹幕".encode()
+_DM_VIEW = (
+    b"\x22" + _pb_varint(len(_SEG_INFO)) + _SEG_INFO
+    + b"\x2a" + _pb_varint(len(_TIP)) + _TIP
+    + b"\x40" + _pb_varint(1828)
+)
+
+
+def test_parse_danmaku_count_reads_field_8():
+    assert parse_danmaku_count(_DM_VIEW) == 1828
+
+
+def test_parse_danmaku_count_absent_field_means_zero():
+    """protobuf 不编码默认值：没有弹幕的分段不带字段 8。"""
+    assert parse_danmaku_count(b"\x22" + _pb_varint(len(_SEG_INFO)) + _SEG_INFO) == 0
+
+
+def test_parse_danmaku_count_rejects_truncated_body():
+    with pytest.raises(BilibiliError):
+        parse_danmaku_count(b"\x40\x80")
+
+
+def test_fetch_danmaku_count_signs_and_reports_block():
+    client = _http()
+    with _nav_patch("_danmaku"), patch.object(client, "get_bytes", return_value=_DM_VIEW) as sent:
+        assert fetch_danmaku_count(client, aid=1, cid=2, duration=1585.0) == 1828
+    url = sent.call_args[0][0]
+    assert "/x/v2/dm/web/view?" in url and "oid=2" in url and "duration=1585" in url
+    assert "w_rid=" in url
+    with _nav_patch("_danmaku"), patch.object(client, "get_bytes", side_effect=_BLOCKED):
+        with pytest.raises(RateLimitedError, match="取弹幕数触发风控（412）"):
+            fetch_danmaku_count(client, aid=1, cid=2, duration=1585.0)

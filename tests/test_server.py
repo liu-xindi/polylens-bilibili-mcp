@@ -23,6 +23,7 @@ from polylens_bilibili.models import (
     FeedItem,
     LoginCheckResult,
     Page,
+    PartDanmakuCount,
     QrLoginSession,
     QrStatus,
     ReplyBatch,
@@ -37,9 +38,9 @@ from polylens_bilibili.models import (
 
 BV_URL = "https://www.bilibili.com/video/BV1xx411c7mD/"
 _TOOL_NAMES = {
-    "get_video_info", "get_parts", "get_comments", "get_comment_replies", "get_subtitles",
-    "search_videos", "suggest_keywords", "list_up_videos", "get_up_info", "get_feed",
-    "get_login_status", "logout", "start_qr_login", "complete_qr_login", "get_version",
+    "get_video_info", "get_parts", "get_danmaku_counts", "get_comments", "get_comment_replies",
+    "get_subtitles", "search_videos", "suggest_keywords", "list_up_videos", "get_up_info",
+    "get_feed", "get_login_status", "logout", "start_qr_login", "complete_qr_login", "get_version",
 }
 
 
@@ -123,7 +124,9 @@ def test_content_tools_declare_url_and_page() -> None:
     schemas = _run(scenario)
     assert "page" in schemas["get_subtitles"]["properties"]
     # 评论按整片取，与分段无关；批量工具的分段写在每项的 ?p= 里
-    for name in ("get_comments", "get_comment_replies", "get_video_info", "get_parts"):
+    for name in (
+        "get_comments", "get_comment_replies", "get_video_info", "get_parts", "get_danmaku_counts",
+    ):
         assert "page" not in schemas[name]["properties"], name
 
 
@@ -293,6 +296,22 @@ def test_get_parts_jq_runs_per_video() -> None:
     assert [r["parts"] for r in payload["results"]] == ["1", "2"]
 
 
+def test_get_danmaku_counts_groups_by_video_with_row_errors() -> None:
+    rows = [PartDanmakuCount(page=1, part="片头", duration=60.0, danmaku_count=120),
+            PartDanmakuCount(page=2, part="正片", duration=600.0, danmaku_count=None,
+                             error="网络错误：timed out")]
+    results = [Batched("BV1a", rows), Batched("BV1bad", error="视频不存在：BV1bad")]
+    with _with_client(get_danmaku_counts=results):
+        payload = _payload("get_danmaku_counts", {"jq": ".", "videos": ["BV1a", "BV1bad"]})
+    ok, bad = payload["results"]
+    assert ok["count"] == 2
+    assert ok["parts"] == (
+        "parts[2]{page,part,duration,danmaku_count,error}:\n"
+        "  1,片头,60,120,\n  2,正片,600,,网络错误：timed out"
+    )
+    assert bad["error"] == "视频不存在：BV1bad" and bad["parts"] is None
+
+
 def test_search_returns_toon_and_paging() -> None:
     page = Page(
         items=[
@@ -412,6 +431,7 @@ def test_complete_qr_login_pending_states(status: QrStatus) -> None:
 _PLATFORM_CALLS = [
     ("get_video_info", {"videos": ["BV1a"], "jq": "."}),
     ("get_parts", {"videos": ["BV1a"], "jq": "."}),
+    ("get_danmaku_counts", {"videos": ["BV1a"], "jq": "."}),
     ("get_up_info", {"authors": ["2"], "jq": "."}),
     ("get_comments", {"url": BV_URL, "count": 1, "batch_id": "b1", "jq": "."}),
     ("get_comment_replies", {"url": BV_URL, "comment_ids": ["1"], "pages": 1, "jq": "."}),
@@ -527,7 +547,7 @@ def test_list_tools_accept_jq() -> None:
     with_jq = {name for name, schema in schemas.items() if "jq" in schema["properties"]}
     assert with_jq == {
         "search_videos", "list_up_videos", "get_feed", "get_comments", "get_subtitles",
-        "get_comment_replies", "get_parts", "get_video_info", "get_up_info",
+        "get_comment_replies", "get_parts", "get_danmaku_counts", "get_video_info", "get_up_info",
     }
     subtitles_desc = schemas["get_subtitles"]["properties"]["jq"]["description"]
     assert "start,end,content" in subtitles_desc

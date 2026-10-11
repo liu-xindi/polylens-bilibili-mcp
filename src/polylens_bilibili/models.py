@@ -243,6 +243,17 @@ class VideoPart:
 
 
 @dataclass(slots=True)
+class PartDanmakuCount:
+    """一段的弹幕数。取不到时 danmaku_count 为空，error 写原因。"""
+
+    page: int  # 分段序号，1 起
+    part: str | None  # 该段标题
+    duration: float | None  # 该段时长秒数
+    danmaku_count: int | None
+    error: str | None = None
+
+
+@dataclass(slots=True)
 class VideoInfo:
     """视频元信息。字段口径写在 server.py 的工具 description 里。"""
 

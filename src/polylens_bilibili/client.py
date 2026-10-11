@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 from .api._comments import fetch_comments, fetch_replies
 from .api._constants import SHORT_LINK_HOSTS, USER_AGENT
+from .api._danmaku import fetch_danmaku_count
 from .api._feed import fetch_feed
 from .api._http import HttpClient, _RateLimited
 from .api._login import check_qr_login, start_qr_login
@@ -25,7 +26,7 @@ from .api._space import fetch_up_videos
 from .api._subtitles import SubtitleTrack, fetch_subtitles
 from .api._suggest import fetch_suggest
 from .api._up import fetch_up_info
-from .api._video import build_video_info, fetch_view, list_parts
+from .api._video import build_video_info, fetch_view, list_parts, select_parts
 from .errors import AuthRequiredError, BilibiliError, RateLimitedError
 from .models import (
     Batched,
@@ -33,6 +34,7 @@ from .models import (
     FeedItem,
     LoginCheckResult,
     Page,
+    PartDanmakuCount,
     QrLoginSession,
     ReplyBatch,
     SearchItem,
@@ -145,6 +147,18 @@ def resolve_video(url: str, page: int | None = None, cookie: str = "") -> tuple[
     return _extract_video_id(expanded), chosen or 1
 
 
+def resolve_video_part(url: str, cookie: str = "") -> tuple[str, int | None]:
+    """把输入解析成 (视频号, 分段序号)；没指定分段时序号为 None。
+
+    短链展开后的链接总带 p=1，分不清是没写还是指定第 1 段，按没写算。
+    """
+    expanded = _expand_short_link(url, cookie)
+    page = _extract_page(url)
+    if page is None and (in_link := _extract_page(expanded)) != 1:
+        page = in_link
+    return _extract_video_id(expanded), page
+
+
 class BilibiliClient:
     """一次工具调用的作用域内共用一个 HTTP 会话。"""
 
@@ -237,6 +251,41 @@ class BilibiliClient:
             if video_id not in views:
                 views[video_id] = self._view(video_id)
             return list_parts(views[video_id])
+
+        return _each(inputs, fetch)
+
+    def get_danmaku_counts(self, inputs: list[str]) -> list[Batched[list[PartDanmakuCount]]]:
+        views: dict[str, dict[str, Any]] = {}
+        blocked: list[str] = []  # 触发风控后，其余分段不再请求，记同一原因
+
+        def count(aid: int, entry: dict[str, Any], page: int) -> PartDanmakuCount:
+            duration = float(entry["duration"]) if entry.get("duration") else None
+            row = PartDanmakuCount(page, entry.get("part"), duration, danmaku_count=None)
+            if blocked:
+                row.error = blocked[0]
+                return row
+            try:
+                cid = int(entry["cid"])
+                row.danmaku_count = fetch_danmaku_count(self._http, aid, cid, duration)
+            except RateLimitedError as e:
+                blocked.append(str(e))
+                row.error = str(e)
+            except BilibiliError as e:
+                row.error = str(e)
+            except OSError as e:
+                row.error = f"网络错误：{e}"
+            return row
+
+        def fetch(text: str) -> list[PartDanmakuCount]:
+            video_id, page = resolve_video_part(text, cookie=self._http.cookie)
+            if video_id not in views:
+                views[video_id] = self._view(video_id)
+            _info, aid, _cid = build_video_info(views[video_id])
+            entries = select_parts(views[video_id], page)
+            return [
+                count(aid, entry, entry.get("page") or page or index)
+                for index, entry in enumerate(entries, start=1)
+            ]
 
         return _each(inputs, fetch)
 

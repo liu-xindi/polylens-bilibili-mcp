@@ -146,5 +146,12 @@ def list_parts(view: dict[str, Any]) -> list[VideoPart]:
     ]
 
 
+def select_parts(view: dict[str, Any], page: int | None) -> list[dict[str, Any]]:
+    """要取的分段条目（含 cid/page/part/duration）：指定 page 时只取那一段，否则全部。"""
+    if page is not None:
+        return [_resolve_page(view, page)]
+    return [p for p in view.get("pages") or [] if p.get("cid")] or [_resolve_page(view, 1)]
+
+
 def _float_or_none(value: Any) -> float | None:
     return float(value) if value else None

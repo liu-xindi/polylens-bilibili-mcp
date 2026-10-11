@@ -33,6 +33,7 @@ from .models import (
     Batched,
     Comment,
     FeedItem,
+    PartDanmakuCount,
     QrStatus,
     SearchItem,
     SubtitleEntry,
@@ -602,6 +603,33 @@ def create_server(
                 results.append(PartsItem(input=r.input, error=r.error))
                 continue
             parts, jq_count = encode_items("parts", r.value, VideoPart, jq)
+            results.append(
+                PartsItem(input=r.input, count=len(r.value), parts=parts, jq_count=jq_count)
+            )
+        return PartsResult(results=results)
+
+    @tool(annotations=_READS_PLATFORM)
+    def get_danmaku_counts(
+        videos: Annotated[list[str], Field(description=_VIDEOS_DESC)],
+        *,
+        jq: Annotated[
+            str,
+            Field(description=_jq_desc(PartDanmakuCount, paged=False, scope="单个视频的分段")),
+        ],
+    ) -> PartsResult:
+        """每个视频一组，每段一行。链接带 ?p=N 时只取那一段。
+
+        danmaku_count 由平台封顶，分段越长上限越高（如约 8 分钟的为 2000、约 30 分钟的
+        为 6000、45 分钟以上的为 12000），达到上限时实际弹幕更多。
+
+        (danmaku count per part)
+        """
+        results = []
+        for r in _client().get_danmaku_counts(videos):
+            if r.value is None:
+                results.append(PartsItem(input=r.input, error=r.error))
+                continue
+            parts, jq_count = encode_items("parts", r.value, PartDanmakuCount, jq)
             results.append(
                 PartsItem(input=r.input, count=len(r.value), parts=parts, jq_count=jq_count)
             )

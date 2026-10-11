@@ -233,6 +233,10 @@ class HttpClient:
             path, lambda: self._get_json(path, params, referer, base_url, allow_codes)
         )
 
+    def get_api_bytes(self, path: str, params: dict[str, Any]) -> bytes:
+        """请求不返回 JSON 的平台接口（如 protobuf），与 get_json 共用风控识别。"""
+        return self._guarded(path, lambda: self._fetch(path, params, _DEFAULT_REFERER, None))
+
     def _guarded(self, path: str, call: Callable[[], Any]) -> Any:
         guard = _guards.get(_group(path))  # 每次现取：测试会整个替换 _guards
         if guard is None:

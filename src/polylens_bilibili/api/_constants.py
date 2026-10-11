@@ -23,6 +23,7 @@ ENDPOINTS: dict[str, str] = {
     "space_videos": "/x/space/wbi/arc/search",
     "up_card": "/x/web-interface/card",
     "feed_rcmd": "/x/web-interface/wbi/index/top/feed/rcmd",
+    "danmaku_view": "/x/v2/dm/web/view",
 }
 
 # 搜索最多翻到第几页。平台结果封顶 1000 条（34 页），再往后的页码会被夹回最后一页。
