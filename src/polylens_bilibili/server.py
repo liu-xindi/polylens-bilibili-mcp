@@ -333,6 +333,7 @@ _CHANGES: tuple[tuple[str, str], ...] = (
     ("0.9.0", "get_danmaku_counts 按段缓存，新增 cached_at 列与 refresh 参数。"),
     ("0.9.1", "get_danmaku_counts 超时后再取会命中缓存。"),
     ("0.9.2", "弹幕数超时后可以重取。"),
+    ("0.9.3", "工具定义里没有的参数也可照传；工具列表里没有的工具需重连才能使用。"),
 )
 
 
@@ -812,7 +813,8 @@ def create_server(
         annotations=_READS_PLATFORM,
         description=(
             f"本说明对应版本 {__version__}。running 与之不同表示工具说明是旧缓存："
-            f"可把 {__version__} 传入 since 查看之后的用法变化，新增的工具与参数需重连才能使用。"
+            f"可把 {__version__} 传入 since 查看之后的用法变化。"
+            "工具定义里没有的参数也可照传；工具列表里没有的工具需重连才能使用。"
             "running 低于 latest 表示服务未升级。latest 查不到时为 null。(server version)"
         ),
     )
