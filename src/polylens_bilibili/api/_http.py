@@ -7,6 +7,7 @@ import http.cookiejar
 import json
 import logging
 import math
+import os
 import threading
 import time
 import urllib.error
@@ -20,6 +21,9 @@ from ..errors import BilibiliError
 from ._constants import API_BASE, ENDPOINTS, USER_AGENT, WEB_HOME
 
 _DEFAULT_REFERER = WEB_HOME
+# 平台对海外出口 IP 不给字幕（10-13 实测：同账号同视频，洛杉矶出口 subtitle 为 null，
+# 国内出口正常）。服务部署在海外时用它把请求转到国内的 HTTP 代理。
+_PROXY_ENV = "POLYLENS_BILIBILI_PROXY"
 _log = logging.getLogger("polylens_bilibili")
 
 # 主评论与二级评论被风控时同进同退（实测主评论被拦时换排序、换视频都不通；二级评论未单独验证，
@@ -191,6 +195,12 @@ def _new_guards() -> dict[str, _Guard]:
 _guards = _new_guards()
 
 
+def _proxy_handler() -> ProxyHandler:
+    """只认 POLYLENS_BILIBILI_PROXY；不设则直连，不跟随 HTTPS_PROXY 等通用变量。"""
+    proxy = os.environ.get(_PROXY_ENV, "").strip()
+    return ProxyHandler({"http": proxy, "https": proxy} if proxy else {})
+
+
 class HttpClient:
     """带 cookie jar 的极简客户端。"""
 
@@ -201,7 +211,7 @@ class HttpClient:
         self.account = hashlib.sha256(self.cookie.encode()).hexdigest()[:16]
         self.timeout = timeout
         self._jar = http.cookiejar.CookieJar()
-        self._opener = build_opener(ProxyHandler({}), HTTPCookieProcessor(self._jar))
+        self._opener = build_opener(_proxy_handler(), HTTPCookieProcessor(self._jar))
 
     def _headers(self, referer: str = _DEFAULT_REFERER) -> dict[str, str]:
         headers = {

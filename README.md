@@ -91,6 +91,7 @@ uvx polylens-bilibili-mcp
 | `POLYLENS_BILIBILI_PUBLIC_URL` | `--public-url` | 无 | 公网地址 |
 | `POLYLENS_BILIBILI_AUTH_SECRET` | 无 | 无 | 机主口令 |
 | `POLYLENS_BILIBILI_INSECURE_NO_AUTH` | 无 | 否 | 关闭鉴权，仅限本机调试 |
+| `POLYLENS_BILIBILI_PROXY` | 无 | 无 | 访问 B 站用的 HTTP 代理，如 `http://10.0.0.2:8888` |
 
 命令行优先于环境变量。http 模式下公网地址和口令缺一则拒绝启动。开启 `INSECURE_NO_AUTH=1` 后任何能连到端口的人都能调用全部工具，包括使用已保存的登录凭据。
 

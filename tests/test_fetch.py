@@ -1193,3 +1193,19 @@ def test_danmaku_count_not_cached_when_blocked():
     with _nav_patch("_danmaku"), patch.object(client, "get_bytes", return_value=_DM_VIEW) as sent:
         assert fetch_danmaku_count(client, aid=1, cid=2, duration=60.0) == (1828, None)
         assert sent.call_count == 1
+
+
+
+def test_proxy_env_routes_all_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLENS_BILIBILI_PROXY", " http://10.0.0.2:8888 ")
+    with patch("polylens_bilibili.api._http.ProxyHandler") as handler:
+        HttpClient()
+    handler.assert_called_once_with({"http": "http://10.0.0.2:8888", "https": "http://10.0.0.2:8888"})
+
+
+def test_proxy_ignores_generic_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYLENS_BILIBILI_PROXY", raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://10.0.0.9:3128")
+    with patch("polylens_bilibili.api._http.ProxyHandler") as handler:
+        HttpClient()
+    handler.assert_called_once_with({})
