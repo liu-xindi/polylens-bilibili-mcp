@@ -21,6 +21,8 @@
 | `get_login_status` · `logout` | 查询登录状态、退出登录 |
 | `get_version` | 运行中的版本与 PyPI 最新版本，用于判断工具说明是否为旧缓存、服务是否需要升级；传 `since` 可查之后的用法变化 |
 
+所有工具的第一个参数 `purpose` 写明本次调用的目的，格式为 `工具名:目的`，供客户端展示和服务端日志使用，除 `get_version` 外必填。
+
 ## 登录
 
 除登录相关工具与 `get_version` 外都需要登录，每次调用前联网核验登录状态。`start_qr_login` 返回二维码，用 B 站 App 扫码确认后，由 `complete_qr_login` 完成登录。凭据保存在 `~/.cache/polylens-bilibili/cookie`（设置了 `XDG_CACHE_HOME` 时位于其下），`logout` 会删除它。

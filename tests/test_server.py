@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from dataclasses import replace
@@ -55,7 +56,7 @@ def _call(tool: str, args: dict[str, Any] | None = None) -> Any:
         server = create_server_for_test()
         async with create_connected_server_and_client_session(server._mcp_server) as client:
             await client.initialize()
-            return await client.call_tool(tool, args or {})
+            return await client.call_tool(tool, {"purpose": f"{tool}:测试", **(args or {})})
 
     return _run(scenario)
 
@@ -112,6 +113,40 @@ def test_tools_declare_read_and_world_hints() -> None:
     assert ann["get_comments"].openWorldHint is True
     assert ann["logout"].openWorldHint is False
     assert ann["complete_qr_login"].readOnlyHint is False
+
+
+def _schemas() -> dict[str, Any]:
+    async def scenario() -> dict[str, Any]:
+        server = create_server_for_test()
+        async with create_connected_server_and_client_session(server._mcp_server) as client:
+            await client.initialize()
+            return {t.name: t.inputSchema for t in (await client.list_tools()).tools}
+
+    return _run(scenario)
+
+
+def test_purpose_is_first_and_required_except_get_version() -> None:
+    for name, schema in _schemas().items():
+        assert next(iter(schema["properties"])) == "purpose", name
+        assert ("purpose" in schema.get("required", [])) == (name != "get_version"), name
+
+
+def test_missing_purpose_is_rejected() -> None:
+    async def scenario() -> Any:
+        server = create_server_for_test()
+        async with create_connected_server_and_client_session(server._mcp_server) as client:
+            await client.initialize()
+            return await client.call_tool("logout", {})
+
+    result = _run(scenario)
+    assert result.isError and "purpose" in result.content[0].text
+
+
+def test_purpose_is_logged_not_passed_on(caplog: pytest.LogCaptureFixture) -> None:
+    with _with_client(suggest=["x"]), caplog.at_level(logging.INFO, server_mod.__name__):
+        result = _call("suggest_keywords", {"purpose": "suggest_keywords:补全", "term": "x"})
+    assert not result.isError
+    assert "目的：suggest_keywords:补全" in caplog.text
 
 
 def test_content_tools_declare_url_and_page() -> None:
@@ -459,7 +494,7 @@ _PLATFORM_CALLS = [
     ("get_parts", {"videos": ["BV1a"], "jq": "."}),
     ("get_danmaku_counts", {"videos": ["BV1a"], "jq": "."}),
     ("get_up_info", {"authors": ["2"], "jq": "."}),
-    ("get_comments", {"url": BV_URL, "count": 1, "batch_id": "b1", "jq": "."}),
+    ("get_comments", {"purpose": "p", "url": BV_URL, "count": 1, "batch_id": "b1", "jq": "."}),
     ("get_comment_replies", {"url": BV_URL, "comment_ids": ["1"], "pages": 1, "jq": "."}),
     ("get_subtitles", {"url": BV_URL, "jq": "."}),
     ("search_videos", {"query": "x", "jq": "."}),
@@ -666,14 +701,15 @@ def test_slow_tool_does_not_block_other_tools() -> None:
 
             async def slow() -> None:
                 await client.call_tool(
-                    "get_comments", {"url": BV_URL, "batch_id": "b1", "count": 1, "jq": "."}
+                    "get_comments",
+                    {"purpose": "p", "url": BV_URL, "batch_id": "b1", "count": 1, "jq": "."},
                 )
                 order.append("slow")
 
             async with anyio.create_task_group() as tg:
                 tg.start_soon(slow)
                 await anyio.sleep(0.2)
-                await client.call_tool("suggest_keywords", {"term": "x"})
+                await client.call_tool("suggest_keywords", {"purpose": "p", "term": "x"})
                 order.append("fast")
                 release.set()
         return order
@@ -897,7 +933,7 @@ def test_get_feed_takes_no_url() -> None:
             return tools["get_feed"].inputSchema
 
     schema = _run(scenario)
-    assert set(schema.get("properties", {})) == {"jq"}
+    assert set(schema.get("properties", {})) == {"purpose", "jq"}
 
 
 def test_get_feed_empty_batch() -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import functools
+import inspect
 import io
 import json
 import logging
@@ -52,6 +53,7 @@ _PAGE_DESC = (
     "分段序号，1 起。不传时取链接里的 ?p=N，两者都没有则第 1 段。单段视频忽略此项。"
 )
 _VIDEOS_DESC = "视频列表，每项为链接、b23.tv 短链或裸 BV/av 号。"
+_PURPOSE_DESC = "格式为 工具名:目的，如 get_parts:找 CS61B 讲并发的分段。"
 _CURSOR_DESC = "续取游标：不传从头开始，回传上次返回的 next_cursor 取下一批。"
 
 # 评论只有两层，二级评论的 reply_count 恒为 0
@@ -268,28 +270,45 @@ def _timed(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-def _in_thread(fn: Callable[..., Any]) -> Callable[..., Any]:
+def _in_thread(fn: Callable[..., Any], *, purpose_required: bool) -> Callable[..., Any]:
     """同步工具放到工作线程里跑，免得一个慢调用（如评论限速排队）卡住整个服务。
 
     评论请求由限速器的锁排队，其他工具互不等待。
     mcp 库把工具异常转成错误结果返回而不记日志，所以在这里记。参数不记，其中有扫码登录的 key。
+    参数表最前加 purpose，只进日志，不传给工具，免得影响评论缓存的键。
     """
     name = fn.__name__
 
     @functools.wraps(fn)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+    async def wrapper(*args: Any, purpose: str | None = None, **kwargs: Any) -> Any:
         start = time.monotonic()
         try:
             result = await to_thread.run_sync(functools.partial(fn, *args, **kwargs))
         except BilibiliError as e:
-            _log.warning("工具 %s 失败（%.1f 秒）：%s", name, time.monotonic() - start, e)
+            _log.warning(
+                "工具 %s 失败（%.1f 秒）：%s；目的：%s", name, time.monotonic() - start, e, purpose
+            )
             raise
         except Exception:
-            _log.exception("工具 %s 异常（%.1f 秒）", name, time.monotonic() - start)
+            _log.exception(
+                "工具 %s 异常（%.1f 秒）；目的：%s", name, time.monotonic() - start, purpose
+            )
             raise
-        _log.info("工具 %s 完成（%.1f 秒）", name, time.monotonic() - start)
+        _log.info("工具 %s 完成（%.1f 秒）；目的：%s", name, time.monotonic() - start, purpose)
         return result
 
+    sig = inspect.signature(fn, eval_str=True)
+    param = inspect.Parameter(
+        "purpose",
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        annotation=Annotated[
+            str if purpose_required else str | None, Field(description=_PURPOSE_DESC)
+        ],
+        default=inspect.Parameter.empty if purpose_required else None,
+    )
+    wrapper.__signature__ = sig.replace(  # type: ignore[attr-defined]
+        parameters=[param, *sig.parameters.values()]
+    )
     return wrapper
 
 
@@ -336,6 +355,7 @@ _CHANGES: tuple[tuple[str, str], ...] = (
     ("0.9.3", "工具定义里没有的参数也可照传；工具列表里没有的工具需重连才能使用。"),
     ("0.9.4", "url 不再列为大字段，回答里附链接时照常选上。"),
     ("0.9.5", "search_videos 的 order 推荐用默认 relevance，不推荐其他排序。"),
+    ("0.10.0", "所有工具新增首个参数 purpose，格式为 工具名:目的，除 get_version 外必填。"),
 )
 
 
@@ -411,8 +431,15 @@ def create_server(
     mcp._mcp_server.version = __version__
 
     # 需要登录的工具计时包住登录核验：核验那次 nav 也是本次调用的服务端耗时。
+    # get_version 的 purpose 可省：旧缓存的客户端不知道它，要靠 get_version 查到这项变化。
     def tool(*, login: bool = True, **kwargs: Any) -> Callable[[Callable[..., Any]], Any]:
-        return lambda fn: mcp.tool(**kwargs)(_in_thread(_timed(_logged_in(fn)) if login else fn))
+        def register(fn: Callable[..., Any]) -> Any:
+            inner = _timed(_logged_in(fn)) if login else fn
+            return mcp.tool(**kwargs)(
+                _in_thread(inner, purpose_required=fn.__name__ != "get_version")
+            )
+
+        return register
 
     if oauth_provider is not None and auth_secret:
         from .oauth import register_consent_route
