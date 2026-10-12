@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal
 from urllib.request import urlopen
 
 import segno
-from anyio import to_thread
+from anyio import lowlevel, to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
@@ -276,6 +276,8 @@ def _in_thread(fn: Callable[..., Any], *, description_required: bool) -> Callabl
     评论请求由限速器的锁排队，其他工具互不等待。
     mcp 库把工具异常转成错误结果返回而不记日志，所以在这里记。参数不记，其中有扫码登录的 key。
     参数表最前加 description，只进日志，不传给工具，免得影响评论缓存的键。
+    线程运行时屏蔽取消，跑完要补一个检查点：已取消的请求由 mcp 库丢弃结果，否则它会再响应一次，
+    触发 "Request already responded to" 断言，整个会话崩掉。
     """
     name = fn.__name__
 
@@ -284,6 +286,7 @@ def _in_thread(fn: Callable[..., Any], *, description_required: bool) -> Callabl
         start = time.monotonic()
         try:
             result = await to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+            await lowlevel.checkpoint_if_cancelled()
         except BilibiliError as e:
             _log.warning(
                 "工具 %s 失败（%.1f 秒）：%s；目的：%s",

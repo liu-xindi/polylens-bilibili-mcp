@@ -12,7 +12,9 @@ from unittest.mock import patch
 
 import anyio
 import pytest
+from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.types import CancelledNotification, CancelledNotificationParams, ClientNotification
 
 from polylens_bilibili import __version__
 from polylens_bilibili import server as server_mod
@@ -723,6 +725,52 @@ def test_slow_tool_does_not_block_other_tools() -> None:
 
     with _with_client(get_comments=slow_comments, suggest=["x"]):
         assert _run(scenario) == ["fast", "slow"]
+
+
+def test_cancelled_tool_finishing_later_keeps_session() -> None:
+    """取消后线程才跑完，不能再响应一次把会话带崩。
+
+    10-12 实测：会话崩后客户端报 session expired。
+    """
+    release = threading.Event()
+
+    def slow_comments(*args: Any, **kwargs: Any) -> Page[Comment]:
+        release.wait(5)
+        return Page(items=[])
+
+    async def scenario() -> Any:
+        server = create_server_for_test()
+        async with create_connected_server_and_client_session(server._mcp_server) as client:
+            await client.initialize()
+
+            async def slow() -> None:
+                with pytest.raises(McpError, match="Request cancelled"):
+                    await client.call_tool(
+                        "get_comments",
+                        {"description": "p", "video": BV_URL, "batch_id": "b1", "count": 1,
+                         "jq": "."},
+                    )
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(slow)
+                await anyio.sleep(0.2)
+                await client.send_notification(
+                    ClientNotification(
+                        CancelledNotification(
+                            params=CancelledNotificationParams(requestId=client._request_id - 1)
+                        )
+                    )
+                )
+                release.set()
+                await anyio.sleep(0.2)
+                with anyio.fail_after(3):
+                    result = await client.call_tool(
+                        "suggest_keywords", {"description": "p", "term": "x"}
+                    )
+        return result.structuredContent
+
+    with _with_client(get_comments=slow_comments, suggest=["x"]):
+        assert _run(scenario)["suggestions"] == ["x"]
 
 
 # ── elapsed_s ───────────────────────────────────────────────────────────────
