@@ -53,7 +53,7 @@ _PAGE_DESC = (
     "分段序号，1 起。不传时取链接里的 ?p=N，两者都没有则第 1 段。单段视频忽略此项。"
 )
 _VIDEOS_DESC = "视频列表，每项为链接、b23.tv 短链或裸 BV/av 号。"
-_PURPOSE_DESC = "格式为 工具名:目的。"
+_PURPOSE_DESC = "格式为 工具名:目的，写在所有参数之前。"
 _CURSOR_DESC = "续取游标：不传从头开始，回传上次返回的 next_cursor 取下一批。"
 
 # 评论只有两层，二级评论的 reply_count 恒为 0
