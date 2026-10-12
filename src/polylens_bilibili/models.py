@@ -179,7 +179,7 @@ class SearchItem:
     """搜索结果的一条。url 可直接传给内容类工具。"""
 
     title: str
-    url: str = field(metadata=bulky("后续调用其他工具时需要"))
+    url: str
     author: str | None
     # UP 主空间链接，可传给 list_up_videos
     author_url: str | None = field(metadata=bulky("查看 UP 主时需要"))
@@ -200,7 +200,7 @@ class FeedItem:
     """首页推荐流的一条。url 可直接传给内容类工具。"""
 
     title: str
-    url: str = field(metadata=bulky("后续调用其他工具时需要"))
+    url: str
     author: str | None
     author_url: str | None = field(metadata=bulky("查看 UP 主时需要"))  # UP 主空间链接
     published_at: str | None  # 本机时区可读时间
@@ -216,7 +216,7 @@ class UpVideoItem:
     """UP 主投稿列表的一条。url 可直接传给内容类工具。"""
 
     title: str
-    url: str = field(metadata=bulky("后续调用其他工具时需要"))
+    url: str
     published_at: str | None  # 本机时区可读时间
     duration_sec: float | None  # 时长秒数
     view_count: int | None
@@ -262,7 +262,7 @@ class VideoInfo:
     title: str
     author: str | None = None
     author_url: str | None = field(default=None, metadata=bulky("查看 UP 主时需要"))
-    url: str | None = field(default=None, metadata=bulky("给出视频链接时需要"))
+    url: str | None = None
     published_at: str | None = None
     summary: str | None = None
     staff: str | None = None                   # 仅联合投稿有值，"名字(角色,mid)" 以分号分隔
