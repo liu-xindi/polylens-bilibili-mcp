@@ -377,7 +377,33 @@ def test_get_version_description_carries_startup_version() -> None:
 
 def test_get_version_reports_running_and_latest() -> None:
     with patch.object(server_mod, "_latest_release", lambda: "9.9.9"):
-        assert _payload("get_version") == {"running": __version__, "latest": "9.9.9"}
+        assert _payload("get_version") == {
+            "running": __version__, "latest": "9.9.9", "changes": None,
+        }
+
+
+def test_get_version_lists_changes_after_since() -> None:
+    changes = [
+        ("0.8.0", "a"), ("0.9.0", "b"), ("0.9.1", "c"), ("99.0.0", "未发布"),
+    ]
+    with patch.object(server_mod, "_latest_release", lambda: None), \
+            patch.object(server_mod, "_CHANGES", tuple(changes)):
+        payload = _payload("get_version", {"since": "0.8.0"})
+    assert payload["changes"] == [
+        {"version": "0.9.0", "change": "b"}, {"version": "0.9.1", "change": "c"},
+    ]
+
+
+def test_get_version_rejects_bad_since() -> None:
+    with patch.object(server_mod, "_latest_release", lambda: None):
+        result = _call("get_version", {"since": "v0.8"})
+    assert result.isError and "无法识别的版本号" in result.content[0].text
+
+
+def test_changes_are_ordered_and_released() -> None:
+    keys = [server_mod._version_key(v) for v, _ in server_mod._CHANGES]
+    assert keys == sorted(keys)
+    assert keys[-1] <= server_mod._version_key(__version__)
 
 
 def test_latest_release_is_none_when_pypi_unreachable() -> None:

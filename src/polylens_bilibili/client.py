@@ -313,7 +313,8 @@ class BilibiliClient:
             entries = select_parts(views[video_id], ranges)
             return [count(aid, entry, entry["page"]) for entry in entries]
 
-        return _each(inputs, fetch)
+        with _danmaku_requests:
+            return _each(inputs, fetch)
 
     def search(
         self, *, query: str, cursor: str | None = None, order: str = "relevance"
@@ -351,6 +352,9 @@ class BilibiliClient:
 # 评论请求整个串行：并发时同一个热度序会话会被几个请求交错推进，评论被拆散到各个请求里；
 # 时间序则会重复抓取还没进缓存的页。限速本来就是全局的，串行不降低吞吐。
 _comment_requests = threading.Lock()
+
+# 弹幕数请求也整个串行：超时后立即重取的调用排在前一次后面，取完即命中缓存，不重复请求。
+_danmaku_requests = threading.Lock()
 
 
 def _each[T](inputs: list[str], fetch: Callable[[str], T]) -> list[Batched[T]]:

@@ -195,9 +195,15 @@ class LoginStateResult(BaseModel):
     is_login: bool | None
 
 
+class VersionChange(BaseModel):
+    version: str
+    change: str
+
+
 class VersionResult(BaseModel):
     running: str
     latest: str | None
+    changes: list[VersionChange] | None = None
 
 
 class LogoutResult(BaseModel):
@@ -318,6 +324,33 @@ _SERVER_INSTRUCTIONS = (
 )
 
 _PYPI_JSON = "https://pypi.org/pypi/polylens-bilibili-mcp/json"
+
+# 面向模型的用法变化，供旧缓存的客户端经 get_version(since) 补上。内部修复不记。
+_CHANGES: tuple[tuple[str, str], ...] = (
+    ("0.9.0", "get_danmaku_counts 的 ?p= 可写范围，如 ?p=1-12、?p=1-3,7。"),
+    ("0.9.0", "其他工具的 ?p= 只能写单段，写范围会报错。"),
+    ("0.9.0", "多段视频的 url 带上 ?p=N。"),
+    ("0.9.0", "get_danmaku_counts 按段缓存，新增 cached_at 列与 refresh 参数。"),
+    ("0.9.1", "get_danmaku_counts 超时后再取会命中缓存。"),
+    ("0.9.2", "弹幕数超时后可以重取。"),
+)
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    """版本号 → 可比较的数字元组，忽略 + 之后的本地标记。"""
+    try:
+        return tuple(int(part) for part in version.split("+", 1)[0].strip().split("."))
+    except ValueError:
+        raise BilibiliError(f"无法识别的版本号：{version}；写法如 0.8.0") from None
+
+
+def _changes_since(since: str) -> list[VersionChange]:
+    low, high = _version_key(since), _version_key(__version__)
+    return [
+        VersionChange(version=v, change=c)
+        for v, c in _CHANGES
+        if low < _version_key(v) <= high
+    ]
 
 
 def _latest_release() -> str | None:
@@ -626,7 +659,7 @@ def create_server(
         danmaku_count 由平台封顶，分段越长上限越高（如约 8 分钟的为 2000、约 30 分钟的
         为 6000、45 分钟以上的为 12000），达到上限时实际弹幕更多。
         按段缓存，cached_at 非空表示来自缓存及其抓取时间，要新数据用 refresh。
-        调用没收到结果时服务端仍会取完，须等一段时间再取，已取完的段直接用缓存；立即重取会重复请求。
+        调用没收到结果时服务端仍会取完，之后再取直接用缓存。
 
         (danmaku count per part)
         """
@@ -778,12 +811,18 @@ def create_server(
         login=False,
         annotations=_READS_PLATFORM,
         description=(
-            f"本说明对应版本 {__version__}。running 与之不同表示工具说明是旧缓存，需重连；"
+            f"本说明对应版本 {__version__}。running 与之不同表示工具说明是旧缓存："
+            f"可把 {__version__} 传入 since 查看之后的用法变化，新增的工具与参数需重连才能使用。"
             "running 低于 latest 表示服务未升级。latest 查不到时为 null。(server version)"
         ),
     )
-    def get_version() -> VersionResult:
-        return VersionResult(running=__version__, latest=_latest_release())
+    def get_version(
+        since: Annotated[
+            str | None, Field(description="本说明的版本号。传入后返回之后的用法变化。")
+        ] = None,
+    ) -> VersionResult:
+        changes = None if since is None else _changes_since(since)
+        return VersionResult(running=__version__, latest=_latest_release(), changes=changes)
 
     @tool(login=False, annotations=_LOCAL_ONLY)
     def logout() -> LogoutResult:

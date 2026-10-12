@@ -517,3 +517,31 @@ def test_comment_requests_run_one_at_a_time(monkeypatch: pytest.MonkeyPatch) -> 
     for t in threads:
         t.join()
     assert peak == 1
+
+
+def test_danmaku_requests_run_one_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """超时后立即重取的调用排在前一次后面，取完即命中缓存，不重复请求。"""
+    active = peak = 0
+    lock = threading.Lock()
+
+    def count(*args: Any, **kwargs: Any) -> tuple[int, str | None]:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.02)
+        with lock:
+            active -= 1
+        return 1, None
+
+    monkeypatch.setattr(BilibiliClient, "_view", lambda self, vid: _multi_view(vid))
+    monkeypatch.setattr(client_mod, "fetch_danmaku_count", count)
+    threads = [
+        threading.Thread(target=lambda: BilibiliClient().get_danmaku_counts(["BV1a"]))
+        for _ in range(3)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak == 1

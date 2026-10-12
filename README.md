@@ -19,7 +19,7 @@
 | `get_subtitles` | 逐句字幕，含起止秒数，可指定语种 |
 | `start_qr_login` · `complete_qr_login` | 扫码登录 |
 | `get_login_status` · `logout` | 查询登录状态、退出登录 |
-| `get_version` | 运行中的版本与 PyPI 最新版本，用于判断工具说明是否为旧缓存、服务是否需要升级 |
+| `get_version` | 运行中的版本与 PyPI 最新版本，用于判断工具说明是否为旧缓存、服务是否需要升级；传 `since` 可查之后的用法变化 |
 
 ## 登录
 
