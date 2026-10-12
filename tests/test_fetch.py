@@ -1165,10 +1165,31 @@ def test_parse_danmaku_count_rejects_truncated_body():
 def test_fetch_danmaku_count_signs_and_reports_block():
     client = _http()
     with _nav_patch("_danmaku"), patch.object(client, "get_bytes", return_value=_DM_VIEW) as sent:
-        assert fetch_danmaku_count(client, aid=1, cid=2, duration=1585.0) == 1828
+        assert fetch_danmaku_count(client, aid=1, cid=2, duration=1585.0) == (1828, None)
     url = sent.call_args[0][0]
     assert "/x/v2/dm/web/view?" in url and "oid=2" in url and "duration=1585" in url
     assert "w_rid=" in url
     with _nav_patch("_danmaku"), patch.object(client, "get_bytes", side_effect=_BLOCKED):
         with pytest.raises(RateLimitedError, match="取弹幕数触发风控（412）"):
-            fetch_danmaku_count(client, aid=1, cid=2, duration=1585.0)
+            fetch_danmaku_count(client, aid=1, cid=2, duration=1585.0, refresh=True)
+
+
+def test_danmaku_count_cached_by_cid_until_refresh():
+    client = _http()
+    with _nav_patch("_danmaku"), patch.object(client, "get_bytes", return_value=_DM_VIEW) as sent:
+        fetch_danmaku_count(client, aid=1, cid=2, duration=60.0)
+        count, cached_at = fetch_danmaku_count(client, aid=1, cid=2, duration=60.0)
+        assert (count, sent.call_count) == (1828, 1) and cached_at is not None
+        fresh = fetch_danmaku_count(client, aid=1, cid=2, duration=60.0, refresh=True)
+        assert fresh == (1828, None)
+        assert sent.call_count == 2
+
+
+def test_danmaku_count_not_cached_when_blocked():
+    client = _http()
+    with _nav_patch("_danmaku"), patch.object(client, "get_bytes", side_effect=_BLOCKED):
+        with pytest.raises(RateLimitedError):
+            fetch_danmaku_count(client, aid=1, cid=2, duration=60.0)
+    with _nav_patch("_danmaku"), patch.object(client, "get_bytes", return_value=_DM_VIEW) as sent:
+        assert fetch_danmaku_count(client, aid=1, cid=2, duration=60.0) == (1828, None)
+        assert sent.call_count == 1

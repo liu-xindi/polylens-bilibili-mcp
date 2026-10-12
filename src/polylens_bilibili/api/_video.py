@@ -102,13 +102,15 @@ def build_video_info(view: dict[str, Any], page: int = 1) -> tuple[VideoInfo, in
     pages = view.get("pages") or []
     is_multi = len(pages) > 1
     duration = selected.get("duration") if is_multi else view.get("duration")
+    current_page = selected.get("page") or page
+    url = f"https://www.bilibili.com/video/{bvid}/"
 
     info = VideoInfo(
         id=bvid,
         title=view.get("title", ""),
         author=(view.get("owner") or {}).get("name"),
         author_url=space_url((view.get("owner") or {}).get("mid")),
-        url=f"https://www.bilibili.com/video/{bvid}/",
+        url=f"{url}?p={current_page}" if is_multi else url,
         published_at=to_local_time(view.get("pubdate")),
         summary=_summary_of(view),
         staff=_staff_of(view),
@@ -126,7 +128,7 @@ def build_video_info(view: dict[str, Any], page: int = 1) -> tuple[VideoInfo, in
         part_count=view.get("videos"),
     )
     if is_multi:
-        info.current_page = selected.get("page") or page
+        info.current_page = current_page
         info.current_part = selected.get("part")
     return info, aid, cid
 
@@ -146,11 +148,22 @@ def list_parts(view: dict[str, Any]) -> list[VideoPart]:
     ]
 
 
-def select_parts(view: dict[str, Any], page: int | None) -> list[dict[str, Any]]:
-    """要取的分段条目（含 cid/page/part/duration）：指定 page 时只取那一段，否则全部。"""
-    if page is not None:
-        return [_resolve_page(view, page)]
-    return [p for p in view.get("pages") or [] if p.get("cid")] or [_resolve_page(view, 1)]
+def select_parts(
+    view: dict[str, Any], ranges: list[tuple[int, int]] | None
+) -> list[dict[str, Any]]:
+    """要取的分段条目（含 cid/page/part/duration，page 必有）。
+
+    指定区间时按写的顺序取这些段，重复的只取一次；不指定取全部。
+    单段视频忽略区间，与 _resolve_page 一致。
+    """
+    pages = view.get("pages") or []
+    if ranges is None or len(pages) <= 1:
+        whole = [{"page": i, **p} for i, p in enumerate(pages, start=1) if p.get("cid")]
+        return whole or [{"page": 1, **_resolve_page(view, 1)}]
+    if (last := max(end for _, end in ranges)) > len(pages):
+        raise BilibiliError(f"该视频共 {len(pages)} 段，没有第 {last} 段")
+    wanted = dict.fromkeys(page for start, end in ranges for page in range(start, end + 1))
+    return [{"page": page, **_resolve_page(view, page)} for page in wanted]
 
 
 def _float_or_none(value: Any) -> float | None:

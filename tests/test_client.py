@@ -16,7 +16,7 @@ from polylens_bilibili.client import (
     _id_params,
     resolve_up,
     resolve_video,
-    resolve_video_part,
+    resolve_video_parts,
 )
 from polylens_bilibili.errors import BilibiliError, RateLimitedError
 from polylens_bilibili.models import Page, UpInfo
@@ -200,11 +200,13 @@ def test_batch_keeps_going_after_an_item_fails(monkeypatch: pytest.MonkeyPatch) 
 def _fake_counts(monkeypatch: pytest.MonkeyPatch, fail: dict[int, Exception]) -> list[int]:
     asked: list[int] = []
 
-    def count(http: Any, aid: int, cid: int, duration: float | None) -> int:
+    def count(
+        http: Any, aid: int, cid: int, duration: float | None, *, refresh: bool = False
+    ) -> tuple[int, str | None]:
         asked.append(cid)
         if cid in fail:
             raise fail[cid]
-        return cid * 10
+        return cid * 10, None
 
     monkeypatch.setattr(BilibiliClient, "_view", lambda self, vid: _multi_view(vid))
     monkeypatch.setattr(client_mod, "fetch_danmaku_count", count)
@@ -237,19 +239,56 @@ def test_danmaku_counts_stop_requesting_after_rate_limit(monkeypatch: pytest.Mon
 
 @pytest.mark.parametrize(("expanded", "page"), [
     ("https://www.bilibili.com/video/BV1a?p=1", None),
-    ("https://www.bilibili.com/video/BV1a?p=4", 4),
+    ("https://www.bilibili.com/video/BV1a?p=4", [(4, 4)]),
 ])
 def test_resolve_video_part_from_short_link(
-    monkeypatch: pytest.MonkeyPatch, expanded: str, page: int | None
+    monkeypatch: pytest.MonkeyPatch, expanded: str, page: list[tuple[int, int]] | None
 ) -> None:
     """短链展开后总带 p=1，分不清是否指定了第 1 段，按没指定算。"""
     monkeypatch.setattr(client_mod, "_expand_short_link", lambda text, cookie="": expanded)
-    assert resolve_video_part("https://b23.tv/abc") == ("BV1a", page)
+    assert resolve_video_parts("https://b23.tv/abc") == ("BV1a", page)
 
 
-def test_resolve_video_part_page_only_when_written() -> None:
-    assert resolve_video_part("BV1a") == ("BV1a", None)
-    assert resolve_video_part("https://www.bilibili.com/video/BV1a/?p=3") == ("BV1a", 3)
+def test_resolve_video_parts_page_only_when_written() -> None:
+    assert resolve_video_parts("BV1a") == ("BV1a", None)
+    assert resolve_video_parts("https://www.bilibili.com/video/BV1a/?p=3") == ("BV1a", [(3, 3)])
+
+
+def test_resolve_video_parts_accepts_ranges() -> None:
+    assert resolve_video_parts("BV1a?p=1-12") == ("BV1a", [(1, 12)])
+    assert resolve_video_parts("BV1a?p=1-3,7") == ("BV1a", [(1, 3), (7, 7)])
+    assert resolve_video_parts("看这个 BV1a?p=2-4，好看") == ("BV1a", [(2, 4)])
+
+
+@pytest.mark.parametrize("spec", ["3-1", "0-2", "1-", "1--3", "1,,3"])
+def test_resolve_video_parts_rejects_bad_range(spec: str) -> None:
+    with pytest.raises(BilibiliError, match="无法识别的分段范围"):
+        resolve_video_parts(f"BV1a?p={spec}")
+
+
+def test_single_part_tools_reject_range() -> None:
+    """范围以前会被读成第一个数字，静默只取那一段。"""
+    with pytest.raises(BilibiliError, match="不支持范围"):
+        resolve_video("BV1a?p=1-12")
+
+
+def test_trailing_comma_after_page_is_punctuation() -> None:
+    assert _extract_page("BV1a?p=3,") == 3
+
+
+def test_danmaku_counts_by_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    """按写的顺序取，重复的段只取一次。"""
+    asked = _fake_counts(monkeypatch, {})
+    (result,) = BilibiliClient().get_danmaku_counts(["BV1a?p=3,1-2,2"])
+    assert [(r.page, r.part) for r in result.value or []] == [(3, "P3"), (1, "P1"), (2, "P2")]
+    assert asked == [13, 11, 12]
+
+
+def test_danmaku_range_past_last_part_fails_the_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked = _fake_counts(monkeypatch, {})
+    (result,) = BilibiliClient().get_danmaku_counts(["BV1a?p=2-1000000"])
+    assert result.error == "该视频共 3 段，没有第 1000000 段"
+    assert asked == []
 
 
 def test_batch_stops_requesting_after_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:

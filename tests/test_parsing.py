@@ -103,6 +103,12 @@ def test_build_video_info_url_shape():
     assert info.url == "https://www.bilibili.com/video/BV1abc/"
 
 
+def test_build_video_info_url_keeps_page_of_multi_part():
+    pages = [{"cid": 10 + p, "page": p, "part": f"P{p}"} for p in (1, 2)]
+    info, _, _ = build_video_info(_view(bvid="BV1abc", pages=pages), page=2)
+    assert info.url == "https://www.bilibili.com/video/BV1abc/?p=2"
+
+
 def test_build_video_info_duration_and_part_count():
     info, _, _ = build_video_info(_view(duration=120, videos=3))
     assert info.duration_sec == 120

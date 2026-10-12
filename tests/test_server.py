@@ -306,8 +306,8 @@ def test_get_danmaku_counts_groups_by_video_with_row_errors() -> None:
     ok, bad = payload["results"]
     assert ok["count"] == 2
     assert ok["parts"] == (
-        "parts[2]{page,part,duration,danmaku_count,error}:\n"
-        "  1,片头,60,120,\n  2,正片,600,,网络错误：timed out"
+        "parts[2]{page,part,duration,danmaku_count,cached_at,error}:\n"
+        "  1,片头,60,120,,\n  2,正片,600,,,网络错误：timed out"
     )
     assert bad["error"] == "视频不存在：BV1bad" and bad["parts"] is None
 

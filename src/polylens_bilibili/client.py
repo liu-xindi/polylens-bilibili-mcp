@@ -48,7 +48,8 @@ _log = logging.getLogger(__name__)
 
 _BV_RE = re.compile(r"BV[0-9A-Za-z]+")
 _AV_RE = re.compile(r"\bav(\d+)\b", re.IGNORECASE)
-_PAGE_RE = re.compile(r"[?&]p=(\d+)")
+# 尾部逗号是分享文案里紧跟链接的标点
+_PAGE_RE = re.compile(r"[?&]p=(\d[\d,\-]*?),*(?![\d,\-])")
 _SPACE_RE = re.compile(r"space\.bilibili\.com/(\d+)")
 # 只收 RFC 3986 允许的字符：分享文案里链接后面常紧跟中文，按空格切会把它们吃进来
 _URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
@@ -116,8 +117,30 @@ def _extract_page(text: str) -> int | None:
     m = _PAGE_RE.search(text)
     if not m:
         return None
+    if not m.group(1).isdigit():
+        raise BilibiliError(f"?p= 不支持范围：{m.group(1)}")
     value = int(m.group(1))
     return value if value >= 1 else None
+
+
+def _extract_pages(text: str) -> list[tuple[int, int]] | None:
+    """从链接里取 ?p= 写的分段，可写范围，如 1-12、1-3,7。返回各段区间，没写返回 None。"""
+    m = _PAGE_RE.search(text)
+    if not m:
+        return None
+    spec = m.group(1)
+    if spec.isdigit():
+        return [(int(spec), int(spec))] if int(spec) >= 1 else None
+    ranges: list[tuple[int, int]] = []
+    for item in spec.split(","):
+        start, sep, end = item.partition("-")
+        if not start.isdigit() or (sep and not end.isdigit()):
+            raise BilibiliError(f"无法识别的分段范围：{spec}；写法如 1-12、1-3,7")
+        first, last = int(start), int(end) if sep else int(start)
+        if first < 1 or last < first:
+            raise BilibiliError(f"无法识别的分段范围：{spec}；写法如 1-12、1-3,7")
+        ranges.append((first, last))
+    return ranges
 
 
 def resolve_up(text: str) -> int:
@@ -147,16 +170,18 @@ def resolve_video(url: str, page: int | None = None, cookie: str = "") -> tuple[
     return _extract_video_id(expanded), chosen or 1
 
 
-def resolve_video_part(url: str, cookie: str = "") -> tuple[str, int | None]:
-    """把输入解析成 (视频号, 分段序号)；没指定分段时序号为 None。
+def resolve_video_parts(
+    url: str, cookie: str = ""
+) -> tuple[str, list[tuple[int, int]] | None]:
+    """把输入解析成 (视频号, 分段区间)；没指定分段时为 None。
 
     短链展开后的链接总带 p=1，分不清是没写还是指定第 1 段，按没写算。
     """
     expanded = _expand_short_link(url, cookie)
-    page = _extract_page(url)
-    if page is None and (in_link := _extract_page(expanded)) != 1:
-        page = in_link
-    return _extract_video_id(expanded), page
+    pages = _extract_pages(url)
+    if pages is None and (in_link := _extract_pages(expanded)) != [(1, 1)]:
+        pages = in_link
+    return _extract_video_id(expanded), pages
 
 
 class BilibiliClient:
@@ -254,7 +279,9 @@ class BilibiliClient:
 
         return _each(inputs, fetch)
 
-    def get_danmaku_counts(self, inputs: list[str]) -> list[Batched[list[PartDanmakuCount]]]:
+    def get_danmaku_counts(
+        self, inputs: list[str], *, refresh: bool = False
+    ) -> list[Batched[list[PartDanmakuCount]]]:
         views: dict[str, dict[str, Any]] = {}
         blocked: list[str] = []  # 触发风控后，其余分段不再请求，记同一原因
 
@@ -266,7 +293,9 @@ class BilibiliClient:
                 return row
             try:
                 cid = int(entry["cid"])
-                row.danmaku_count = fetch_danmaku_count(self._http, aid, cid, duration)
+                row.danmaku_count, row.cached_at = fetch_danmaku_count(
+                    self._http, aid, cid, duration, refresh=refresh
+                )
             except RateLimitedError as e:
                 blocked.append(str(e))
                 row.error = str(e)
@@ -277,15 +306,12 @@ class BilibiliClient:
             return row
 
         def fetch(text: str) -> list[PartDanmakuCount]:
-            video_id, page = resolve_video_part(text, cookie=self._http.cookie)
+            video_id, ranges = resolve_video_parts(text, cookie=self._http.cookie)
             if video_id not in views:
                 views[video_id] = self._view(video_id)
             _info, aid, _cid = build_video_info(views[video_id])
-            entries = select_parts(views[video_id], page)
-            return [
-                count(aid, entry, entry.get("page") or page or index)
-                for index, entry in enumerate(entries, start=1)
-            ]
+            entries = select_parts(views[video_id], ranges)
+            return [count(aid, entry, entry["page"]) for entry in entries]
 
         return _each(inputs, fetch)
 

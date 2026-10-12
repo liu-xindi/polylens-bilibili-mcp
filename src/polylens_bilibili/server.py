@@ -610,22 +610,27 @@ def create_server(
 
     @tool(annotations=_READS_PLATFORM)
     def get_danmaku_counts(
-        videos: Annotated[list[str], Field(description=_VIDEOS_DESC)],
+        videos: Annotated[
+            list[str],
+            Field(description=_VIDEOS_DESC + "?p= 可写单段或范围，如 ?p=3、?p=1-12、?p=1-3,7。"),
+        ],
+        refresh: Annotated[bool, Field(description="跳过缓存重新取，并更新缓存。")] = False,
         *,
         jq: Annotated[
             str,
             Field(description=_jq_desc(PartDanmakuCount, paged=False, scope="单个视频的分段")),
         ],
     ) -> PartsResult:
-        """每个视频一组，每段一行。链接带 ?p=N 时只取那一段。
+        """每个视频一组，每段一行，段号看 page。不写 ?p= 取全部分段。
 
         danmaku_count 由平台封顶，分段越长上限越高（如约 8 分钟的为 2000、约 30 分钟的
         为 6000、45 分钟以上的为 12000），达到上限时实际弹幕更多。
+        按段缓存，cached_at 非空表示来自缓存及其抓取时间，要新数据用 refresh。
 
         (danmaku count per part)
         """
         results = []
-        for r in _client().get_danmaku_counts(videos):
+        for r in _client().get_danmaku_counts(videos, refresh=refresh):
             if r.value is None:
                 results.append(PartsItem(input=r.input, error=r.error))
                 continue

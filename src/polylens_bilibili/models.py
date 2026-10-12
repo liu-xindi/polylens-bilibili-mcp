@@ -250,6 +250,7 @@ class PartDanmakuCount:
     part: str | None  # 该段标题
     duration: float | None  # 该段时长秒数
     danmaku_count: int | None
+    cached_at: str | None = None  # 来自缓存时的抓取时间
     error: str | None = None
 
 
