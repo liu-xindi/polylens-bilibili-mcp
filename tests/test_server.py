@@ -56,7 +56,7 @@ def _call(tool: str, args: dict[str, Any] | None = None) -> Any:
         server = create_server_for_test()
         async with create_connected_server_and_client_session(server._mcp_server) as client:
             await client.initialize()
-            return await client.call_tool(tool, {"purpose": f"{tool}:测试", **(args or {})})
+            return await client.call_tool(tool, {"description": f"{tool}:测试", **(args or {})})
 
     return _run(scenario)
 
@@ -125,13 +125,13 @@ def _schemas() -> dict[str, Any]:
     return _run(scenario)
 
 
-def test_purpose_is_first_and_required_except_get_version() -> None:
+def test_description_is_first_and_required_except_get_version() -> None:
     for name, schema in _schemas().items():
-        assert next(iter(schema["properties"])) == "purpose", name
-        assert ("purpose" in schema.get("required", [])) == (name != "get_version"), name
+        assert next(iter(schema["properties"])) == "description", name
+        assert ("description" in schema.get("required", [])) == (name != "get_version"), name
 
 
-def test_missing_purpose_is_rejected() -> None:
+def test_missing_description_is_rejected() -> None:
     async def scenario() -> Any:
         server = create_server_for_test()
         async with create_connected_server_and_client_session(server._mcp_server) as client:
@@ -139,12 +139,12 @@ def test_missing_purpose_is_rejected() -> None:
             return await client.call_tool("logout", {})
 
     result = _run(scenario)
-    assert result.isError and "purpose" in result.content[0].text
+    assert result.isError and "description" in result.content[0].text
 
 
-def test_purpose_is_logged_not_passed_on(caplog: pytest.LogCaptureFixture) -> None:
+def test_description_is_logged_not_passed_on(caplog: pytest.LogCaptureFixture) -> None:
     with _with_client(suggest=["x"]), caplog.at_level(logging.INFO, server_mod.__name__):
-        result = _call("suggest_keywords", {"purpose": "suggest_keywords:补全", "term": "x"})
+        result = _call("suggest_keywords", {"description": "suggest_keywords:补全", "term": "x"})
     assert not result.isError
     assert "目的：suggest_keywords:补全" in caplog.text
 
@@ -209,7 +209,9 @@ def _comment(cid: str, content: str, **kw: Any) -> Comment:
 def test_get_comments_returns_toon_and_paging() -> None:
     page = Page(items=[_comment("1", "a"), _comment("2", "b")], has_more=True, next_cursor="tok")
     with _with_client(get_comments=page):
-        payload = _payload("get_comments", {"jq": ".", "url": BV_URL, "batch_id": "b1", "count": 2})
+        payload = _payload(
+            "get_comments", {"jq": ".", "video": BV_URL, "batch_id": "b1", "count": 2}
+        )
     assert payload["video_id"] == "BV1xx411c7mD"
     assert payload["count"] == 2
     assert payload["has_more"] is True
@@ -224,7 +226,7 @@ def test_get_comments_rate_limited_partial_carries_message() -> None:
     page = Page(items=[], has_more=True, next_cursor="SESSION", rate_limited="只取到部分")
     with _with_client(get_comments=page):
         payload = _payload(
-            "get_comments", {"jq": ".", "url": BV_URL, "batch_id": "b1", "count": 40}
+            "get_comments", {"jq": ".", "video": BV_URL, "batch_id": "b1", "count": 40}
         )
     assert payload["next_cursor"] == "SESSION"
     assert payload["message"] == "只取到部分"
@@ -232,7 +234,9 @@ def test_get_comments_rate_limited_partial_carries_message() -> None:
 
 def test_get_comments_omits_next_cursor_at_end() -> None:
     with _with_client(get_comments=Page(items=[], has_more=False)):
-        payload = _payload("get_comments", {"jq": ".", "url": BV_URL, "batch_id": "b1", "count": 5})
+        payload = _payload(
+            "get_comments", {"jq": ".", "video": BV_URL, "batch_id": "b1", "count": 5}
+        )
     assert payload["has_more"] is False
     assert payload["next_cursor"] is None
     assert payload["message"] is None
@@ -246,7 +250,8 @@ def test_get_comment_replies_groups_by_thread() -> None:
     ]
     with _with_client(get_comment_replies=ReplyBatch(threads)):
         payload = _payload(
-            "get_comment_replies", {"jq": ".", "url": BV_URL, "comment_ids": ["1", "2"], "pages": 1}
+            "get_comment_replies",
+            {"jq": ".", "video": BV_URL, "comment_ids": ["1", "2"], "pages": 1},
         )
     results = payload["results"]
     assert [r["comment_id"] for r in results] == ["1", "2"]
@@ -264,7 +269,8 @@ def test_get_comment_replies_surfaces_thread_error() -> None:
     ]
     with _with_client(get_comment_replies=ReplyBatch(threads)):
         payload = _payload(
-            "get_comment_replies", {"jq": ".", "url": BV_URL, "comment_ids": ["1", "2"], "pages": 1}
+            "get_comment_replies",
+            {"jq": ".", "video": BV_URL, "comment_ids": ["1", "2"], "pages": 1},
         )
     assert [r["error"] for r in payload["results"]] == [None, "接口返回失败: 12006 没有该评论"]
 
@@ -277,7 +283,8 @@ def test_get_comment_replies_surfaces_withheld() -> None:
     ]
     with _with_client(get_comment_replies=ReplyBatch(threads)):
         payload = _payload(
-            "get_comment_replies", {"jq": ".", "url": BV_URL, "comment_ids": ["1", "2"], "pages": 1}
+            "get_comment_replies",
+            {"jq": ".", "video": BV_URL, "comment_ids": ["1", "2"], "pages": 1},
         )
     assert [r["withheld"] for r in payload["results"]] == [6, 0]
     assert [r["total"] for r in payload["results"]] == [34, None]
@@ -287,7 +294,7 @@ def test_get_subtitles_returns_toon_with_lang_info() -> None:
     track = SubtitleTrack([SubtitleEntry(start=1.0, end=2.0, content="一句")], "ai-zh",
                           ["en-US", "ai-zh"])
     with _with_client(get_subtitles=track):
-        payload = _payload("get_subtitles", {"jq": ".", "url": BV_URL})
+        payload = _payload("get_subtitles", {"jq": ".", "video": BV_URL})
     assert payload["count"] == 1
     assert payload["lang"] == "ai-zh"  # 默认取首条时也告知实际语种
     assert payload["available_langs"] == ["en-US", "ai-zh"]
@@ -302,7 +309,7 @@ def test_get_subtitles_passes_lang_through() -> None:
         return SubtitleTrack([], "en-US", ["en-US"])
 
     with _with_client(get_subtitles=_capture):
-        _payload("get_subtitles", {"jq": ".", "url": BV_URL + "?p=3", "lang": "en-US"})
+        _payload("get_subtitles", {"jq": ".", "video": BV_URL + "?p=3", "lang": "en-US"})
     assert seen == {"video_id": "BV1xx411c7mD", "page": 3, "lang": "en-US"}
 
 
@@ -359,7 +366,7 @@ def test_search_returns_toon_and_paging() -> None:
         next_cursor="1",
     )
     with _with_client(search=page):
-        payload = _payload("search_videos", {"jq": ".", "query": "py"})
+        payload = _payload("search_videos", {"jq": ".", "keyword": "py"})
     assert payload["count"] == 1
     assert payload["has_more"] is True and payload["next_cursor"] == "1"
     assert payload["results"].startswith(
@@ -376,7 +383,7 @@ def test_search_passes_order_through() -> None:
         return Page(items=[])
 
     with _with_client(search=search):
-        _payload("search_videos", {"jq": ".", "query": "py", "order": "most_danmaku"})
+        _payload("search_videos", {"jq": ".", "keyword": "py", "order": "most_danmaku"})
     assert seen["order"] == "most_danmaku"
 
 
@@ -494,10 +501,10 @@ _PLATFORM_CALLS = [
     ("get_parts", {"videos": ["BV1a"], "jq": "."}),
     ("get_danmaku_counts", {"videos": ["BV1a"], "jq": "."}),
     ("get_up_info", {"authors": ["2"], "jq": "."}),
-    ("get_comments", {"purpose": "p", "url": BV_URL, "count": 1, "batch_id": "b1", "jq": "."}),
-    ("get_comment_replies", {"url": BV_URL, "comment_ids": ["1"], "pages": 1, "jq": "."}),
-    ("get_subtitles", {"url": BV_URL, "jq": "."}),
-    ("search_videos", {"query": "x", "jq": "."}),
+    ("get_comments", {"video": BV_URL, "count": 1, "batch_id": "b1", "jq": "."}),
+    ("get_comment_replies", {"video": BV_URL, "comment_ids": ["1"], "pages": 1, "jq": "."}),
+    ("get_subtitles", {"video": BV_URL, "jq": "."}),
+    ("search_videos", {"keyword": "x", "jq": "."}),
     ("suggest_keywords", {"term": "x"}),
     ("list_up_videos", {"author_url": "2", "jq": "."}),
     ("get_feed", {"jq": "."}),
@@ -584,9 +591,9 @@ def test_tool_outcomes_are_logged(caplog: pytest.LogCaptureFixture) -> None:
         with _with_client(get_login_status=True):
             _call("get_login_status")
         with _with_client():
-            _call("get_subtitles", {"url": "https://example.com/x", "jq": "."})
+            _call("get_subtitles", {"video": "https://example.com/x", "jq": "."})
         with _with_client(get_subtitles=broken):
-            assert _call("get_subtitles", {"url": BV_URL, "jq": "."}).isError
+            assert _call("get_subtitles", {"video": BV_URL, "jq": "."}).isError
     ok, failed, crashed = [r for r in caplog.records if r.name == "polylens_bilibili.server"]
     assert ok.levelname == "INFO" and "get_login_status" in ok.getMessage()
     assert failed.levelname == "WARNING" and "无法从输入解析" in failed.getMessage()
@@ -622,7 +629,7 @@ def test_get_comments_jq_keeps_count_and_paging() -> None:
         payload = _payload(
             "get_comments",
             {
-                "url": BV_URL, "count": 2, "batch_id": "b1",
+                "video": BV_URL, "count": 2, "batch_id": "b1",
                 "jq": '[.[] | select(.content == "b") | {id, content}]',
             },
         )
@@ -641,7 +648,7 @@ def test_get_comment_replies_jq_runs_per_thread() -> None:
     with _with_client(get_comment_replies=ReplyBatch(threads)):
         payload = _payload(
             "get_comment_replies",
-            {"url": BV_URL, "comment_ids": ["1", "2"], "pages": 1, "jq": "[.[] | .content]"},
+            {"video": BV_URL, "comment_ids": ["1", "2"], "pages": 1, "jq": "[.[] | .content]"},
         )
     assert [r["replies"] for r in payload["results"]] == ['["x","y"]', '["z"]']
     assert [r["jq_count"] for r in payload["results"]] == [2, 1]
@@ -652,7 +659,7 @@ def test_get_subtitles_jq_text_only() -> None:
                SubtitleEntry(start=3.0, end=4.0, content="二句")]
     with _with_client(get_subtitles=SubtitleTrack(entries, "ai-zh", ["ai-zh"])):
         payload = _payload(
-            "get_subtitles", {"url": BV_URL, "jq": 'map(.content) | join("\\n")'}
+            "get_subtitles", {"video": BV_URL, "jq": 'map(.content) | join("\\n")'}
         )
     assert payload["subtitles"] == "一句\n二句"
     assert payload["count"] == 2
@@ -702,14 +709,14 @@ def test_slow_tool_does_not_block_other_tools() -> None:
             async def slow() -> None:
                 await client.call_tool(
                     "get_comments",
-                    {"purpose": "p", "url": BV_URL, "batch_id": "b1", "count": 1, "jq": "."},
+                    {"description": "p", "video": BV_URL, "batch_id": "b1", "count": 1, "jq": "."},
                 )
                 order.append("slow")
 
             async with anyio.create_task_group() as tg:
                 tg.start_soon(slow)
                 await anyio.sleep(0.2)
-                await client.call_tool("suggest_keywords", {"purpose": "p", "term": "x"})
+                await client.call_tool("suggest_keywords", {"description": "p", "term": "x"})
                 order.append("fast")
                 release.set()
         return order
@@ -726,14 +733,14 @@ def test_slow_tool_does_not_block_other_tools() -> None:
     [
         ("get_video_info", {"videos": [BV_URL], "jq": "."}, {"get_video_infos": []}),
         (
-            "get_comments", {"jq": ".", "url": BV_URL, "batch_id": "b1", "count": 1},
+            "get_comments", {"jq": ".", "video": BV_URL, "batch_id": "b1", "count": 1},
             {"get_comments": Page(items=[])},
         ),
         (
-            "get_subtitles", {"jq": ".", "url": BV_URL},
+            "get_subtitles", {"jq": ".", "video": BV_URL},
             {"get_subtitles": SubtitleTrack([], None, [])},
         ),
-        ("search_videos", {"jq": ".", "query": "x"}, {"search": Page(items=[])}),
+        ("search_videos", {"jq": ".", "keyword": "x"}, {"search": Page(items=[])}),
     ],
 )
 def test_content_tools_attach_elapsed_s(
@@ -771,7 +778,7 @@ def test_get_comments_exposes_sort_modes() -> None:
 def test_hot_comments_require_batch_id() -> None:
     called: list[int] = []
     with _with_client(get_comments=lambda *a, **kw: called.append(1) or Page(items=[])):
-        result = _call("get_comments", {"url": BV_URL, "count": 1, "jq": "."})
+        result = _call("get_comments", {"video": BV_URL, "count": 1, "jq": "."})
     assert result.isError
     assert "batch_id" in result.content[0].text
     assert not called
@@ -785,7 +792,7 @@ def test_get_comments_passes_sort_through() -> None:
         return Page(items=[])
 
     with _with_client(get_comments=_capture):
-        _payload("get_comments", {"jq": ".", "url": BV_URL, "count": 5, "mode": "newest"})
+        _payload("get_comments", {"jq": ".", "video": BV_URL, "count": 5, "mode": "newest"})
     assert seen["sort"] == "newest"
 
 
@@ -799,7 +806,7 @@ def test_get_comments_passes_batch_id_and_refresh() -> None:
     with _with_client(get_comments=_capture):
         payload = _payload(
             "get_comments",
-            {"jq": ".", "url": BV_URL, "count": 5, "mode": "newest", "refresh": True},
+            {"jq": ".", "video": BV_URL, "count": 5, "mode": "newest", "refresh": True},
         )
     assert seen["refresh"] is True and seen["batch_id"] is None
     assert payload["from_cache"] is True and payload["cached_at"] == "2026-10-09 12:00"
@@ -816,7 +823,7 @@ def test_get_comment_replies_reports_cache_once_per_call() -> None:
     with _with_client(get_comment_replies=_capture):
         payload = _payload(
             "get_comment_replies",
-            {"jq": ".", "url": BV_URL, "comment_ids": ["1"], "pages": 1, "refresh": True},
+            {"jq": ".", "video": BV_URL, "comment_ids": ["1"], "pages": 1, "refresh": True},
         )
     assert seen["refresh"] is True
     assert payload["from_cache"] is True and payload["cached_at"] == "2026-10-09 12:00"
@@ -933,7 +940,7 @@ def test_get_feed_takes_no_url() -> None:
             return tools["get_feed"].inputSchema
 
     schema = _run(scenario)
-    assert set(schema.get("properties", {})) == {"purpose", "jq"}
+    assert set(schema.get("properties", {})) == {"description", "jq"}
 
 
 def test_get_feed_empty_batch() -> None:
