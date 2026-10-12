@@ -686,7 +686,9 @@ def create_server(
         cursor: Annotated[str | None, Field(description=_CURSOR_DESC)] = None,
         order: Annotated[
             Literal["relevance", "newest", "most_viewed", "most_danmaku", "most_favorited"],
-            Field(description="排序。relevance 是 B 站的综合排序。"),
+            Field(
+                description="排序。relevance 是 B 站的综合排序，推荐使用默认值，不推荐改用其他排序。"
+            ),
         ] = "relevance",
         *,
         jq: Annotated[
