@@ -45,3 +45,26 @@ jobs:
 
       - name: Publish
         run: uv publish --trusted-publishing always
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # 直接推 main、不走 PR，--generate-notes 只会给一条对比链接；改列上个 tag 以来的提交标题
+      - name: Create GitHub release
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^")
+          {
+            git log --format="- %s" --invert-grep --grep="^chore(release):" "$prev..$GITHUB_REF_NAME"
+            echo
+            echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$prev...$GITHUB_REF_NAME"
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
