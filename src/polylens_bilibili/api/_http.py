@@ -22,7 +22,8 @@ from ._constants import API_BASE, ENDPOINTS, USER_AGENT, WEB_HOME
 
 _DEFAULT_REFERER = WEB_HOME
 # 平台对海外出口 IP 不给字幕（10-13 实测：同账号同视频，洛杉矶出口 subtitle 为 null，
-# 国内出口正常）。服务部署在海外时用它把请求转到国内的 HTTP 代理。
+# 国内出口正常）。服务部署在海外时用它把字幕请求转到国内的 HTTP 代理；其余接口海外直连正常，
+# 评论风控按账号算、换出口也不通，所以只有字幕走代理。
 _PROXY_ENV = "POLYLENS_BILIBILI_PROXY"
 _log = logging.getLogger("polylens_bilibili")
 
@@ -195,10 +196,10 @@ def _new_guards() -> dict[str, _Guard]:
 _guards = _new_guards()
 
 
-def _proxy_handler() -> ProxyHandler:
-    """只认 POLYLENS_BILIBILI_PROXY；不设则直连，不跟随 HTTPS_PROXY 等通用变量。"""
+def _proxies() -> dict[str, str]:
+    """只认 POLYLENS_BILIBILI_PROXY；不跟随 HTTPS_PROXY 等通用变量。"""
     proxy = os.environ.get(_PROXY_ENV, "").strip()
-    return ProxyHandler({"http": proxy, "https": proxy} if proxy else {})
+    return {"http": proxy, "https": proxy} if proxy else {}
 
 
 class HttpClient:
@@ -211,7 +212,13 @@ class HttpClient:
         self.account = hashlib.sha256(self.cookie.encode()).hexdigest()[:16]
         self.timeout = timeout
         self._jar = http.cookiejar.CookieJar()
-        self._opener = build_opener(_proxy_handler(), HTTPCookieProcessor(self._jar))
+        self._opener = build_opener(ProxyHandler({}), HTTPCookieProcessor(self._jar))
+        proxies = _proxies()
+        self._proxied_opener = (
+            build_opener(ProxyHandler(proxies), HTTPCookieProcessor(self._jar))
+            if proxies
+            else self._opener
+        )
 
     def _headers(self, referer: str = _DEFAULT_REFERER) -> dict[str, str]:
         headers = {
@@ -224,9 +231,13 @@ class HttpClient:
             headers["Cookie"] = self.cookie
         return headers
 
-    def get_bytes(self, url: str, referer: str = _DEFAULT_REFERER) -> bytes:
+    def get_bytes(
+        self, url: str, referer: str = _DEFAULT_REFERER, *, proxied: bool = False
+    ) -> bytes:
+        """proxied 为真时经 POLYLENS_BILIBILI_PROXY 发出，未设置则仍直连。"""
         request = Request(url, headers=self._headers(referer))
-        with self._opener.open(request, timeout=self.timeout) as response:
+        opener = self._proxied_opener if proxied else self._opener
+        with opener.open(request, timeout=self.timeout) as response:
             return response.read()
 
     def get_json(
@@ -237,15 +248,16 @@ class HttpClient:
         referer: str = _DEFAULT_REFERER,
         base_url: str | None = None,
         allow_codes: set[int] | None = None,
+        proxied: bool = False,
     ) -> Any:
         """请求 JSON 接口并返回 data 字段；非 0 code 抛错（白名单除外）。"""
         return self._guarded(
-            path, lambda: self._get_json(path, params, referer, base_url, allow_codes)
+            path, lambda: self._get_json(path, params, referer, base_url, allow_codes, proxied)
         )
 
     def get_api_bytes(self, path: str, params: dict[str, Any]) -> bytes:
         """请求不返回 JSON 的平台接口（如 protobuf），与 get_json 共用风控识别。"""
-        return self._guarded(path, lambda: self._fetch(path, params, _DEFAULT_REFERER, None))
+        return self._guarded(path, lambda: self._fetch(path, params, _DEFAULT_REFERER, None, False))
 
     def _guarded(self, path: str, call: Callable[[], Any]) -> Any:
         guard = _guards.get(_group(path))  # 每次现取：测试会整个替换 _guards
@@ -273,6 +285,7 @@ class HttpClient:
         params: dict[str, Any] | None,
         referer: str,
         base_url: str | None,
+        proxied: bool,
     ) -> bytes:
         base = base_url if base_url is not None else self.api_base
         url = f"{base}{path}"
@@ -281,7 +294,7 @@ class HttpClient:
         recent = _recent.setdefault(_group(path), deque(maxlen=_RECENT_KEPT))
         recent.append(time.monotonic())
         try:
-            return self.get_bytes(url, referer)
+            return self.get_bytes(url, referer, proxied=proxied)
         except urllib.error.HTTPError as exc:
             if exc.code in (412, 429):
                 raise self._rate_limited(str(exc.code), path) from exc
@@ -294,8 +307,9 @@ class HttpClient:
         referer: str,
         base_url: str | None,
         allow_codes: set[int] | None,
+        proxied: bool,
     ) -> Any:
-        raw = self._fetch(path, params, referer, base_url)
+        raw = self._fetch(path, params, referer, base_url, proxied)
         payload = json.loads(raw.decode("utf-8"))
         code = payload.get("code")
         if code in (-352, -509):
@@ -319,9 +333,9 @@ class HttpClient:
         )
         return _RateLimited(signal, path)
 
-    def get_json_url(self, url: str) -> Any:
+    def get_json_url(self, url: str, *, proxied: bool = False) -> Any:
         """直接 GET 任意 URL 并返回解析后的 JSON（用于字幕文件等外部 URL）。"""
-        raw = self.get_bytes(url)
+        raw = self.get_bytes(url, proxied=proxied)
         return json.loads(raw.decode("utf-8"))
 
     def get_bytes_and_set_cookies(self, url: str) -> tuple[bytes, list[str]]:

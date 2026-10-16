@@ -1196,16 +1196,48 @@ def test_danmaku_count_not_cached_when_blocked():
 
 
 
-def test_proxy_env_routes_all_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+def _recording_opener(opened: list[str], name: str) -> MagicMock:
+    def _open(req, timeout=None):
+        opened.append(name)
+        resp = MagicMock()
+        resp.__enter__.return_value.read.return_value = b'{"code": 0}'
+        return resp
+
+    opener = MagicMock()
+    opener.open = _open
+    return opener
+
+
+def test_proxy_env_used_only_when_proxied(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLENS_BILIBILI_PROXY", " http://10.0.0.2:8888 ")
     with patch("polylens_bilibili.api._http.ProxyHandler") as handler:
-        HttpClient()
-    handler.assert_called_once_with({"http": "http://10.0.0.2:8888", "https": "http://10.0.0.2:8888"})
+        client = HttpClient()
+    assert [c.args[0] for c in handler.call_args_list] == [
+        {},
+        {"http": "http://10.0.0.2:8888", "https": "http://10.0.0.2:8888"},
+    ]
+
+    opened: list[str] = []
+    client._opener = _recording_opener(opened, "direct")
+    client._proxied_opener = _recording_opener(opened, "proxied")
+    client.get_json("/x/test")
+    client.get_json("/x/test", proxied=True)
+    client.get_json_url("https://example.com/a.json", proxied=True)
+    assert opened == ["direct", "proxied", "proxied"]
 
 
 def test_proxy_ignores_generic_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYLENS_BILIBILI_PROXY", raising=False)
     monkeypatch.setenv("HTTPS_PROXY", "http://10.0.0.9:3128")
     with patch("polylens_bilibili.api._http.ProxyHandler") as handler:
-        HttpClient()
+        client = HttpClient()
     handler.assert_called_once_with({})
+    assert client._proxied_opener is client._opener
+
+
+def test_fetch_subtitles_goes_through_proxy():
+    client = _subtitle_client([_SUBTITLE_META[0]])
+    with _nav_patch("_subtitles"), _SIGN_PATCH_SUB:
+        fetch_subtitles(client, aid=100, cid=200)
+    assert client.get_json.call_args.kwargs["proxied"] is True
+    assert client.get_json_url.call_args.kwargs["proxied"] is True

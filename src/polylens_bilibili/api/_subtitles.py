@@ -24,14 +24,17 @@ def _normalize_url(url: str) -> str:
 
 
 def fetch_subtitle_meta(client: HttpClient, aid: int, cid: int) -> list[dict[str, Any]]:
-    """从 player/wbi/v2 获取字幕元数据列表（该视频无字幕时为空列表）。"""
+    """从 player/wbi/v2 获取字幕元数据列表（该视频无字幕时为空列表）。
+
+    这一步受出口 IP 影响，经 POLYLENS_BILIBILI_PROXY 发出；nav 仍直连。
+    """
     nav = fetch_nav(client)
     params = sign_params(
         {"aid": aid, "cid": cid, "isGaiaAvoided": 0, "web_location": 1315873},
         nav.img_key,
         nav.sub_key,
     )
-    data = client.get_json(ENDPOINTS["player_v2"], params)
+    data = client.get_json(ENDPOINTS["player_v2"], params, proxied=True)
     subtitle_info = (data or {}).get("subtitle") or {}
     return subtitle_info.get("subtitles") or []
 
@@ -67,7 +70,8 @@ def fetch_subtitles(
     if not url:
         # 有轨道却没有地址：与"这个视频没有字幕"是两回事，静默返回空会把它们混为一谈。
         raise BilibiliError(f"字幕轨 {meta.get('lan')} 没有可下载的地址")
-    data = client.get_json_url(_normalize_url(url))
+    # 字幕文件在 CDN 上，海外直连能否取到没验证过，与元数据同走代理
+    data = client.get_json_url(_normalize_url(url), proxied=True)
     body = (data or {}).get("body") or []
     entries = [
         SubtitleEntry(
